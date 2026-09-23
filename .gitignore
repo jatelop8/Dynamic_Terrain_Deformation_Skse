@@ -11,3 +11,11 @@ CMakeUserPresets.json
 generated_shaders/
 
 *.ini.bak
+
+# Local scratch: per-change snapshots and audit dumps are never part of the
+# source tree.  Kept out of the build too - nothing in CMakeLists or build.cmd
+# references them.
+*.bak-*
+backup_*/
+_patch_audit/
+_*.txt

@@ -22,6 +22,7 @@ target_sources(${PROJECT_NAME} PRIVATE
     src/HeatSources.cpp
     src/MagicImpacts.cpp
     src/Hooks.cpp
+    src/MeshGeometry.cpp
     src/ObjectStamps.cpp
     src/Profiler.cpp
     src/ShaderReflection.cpp
