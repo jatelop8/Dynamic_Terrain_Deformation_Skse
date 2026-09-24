@@ -545,14 +545,12 @@ namespace Clipmap
 		//
 		// These lines used to be spent against four one-shot budgets - 24
 		// marks, 12 refusals, 32 mesh lines and 8 "not measured" lines - and a
-		// recorded run spent all four inside its first five seconds.  The last
-		// refusal was written at 23:09:52.664 and the last mark at
-		// 23:09:56.940; the ninety seconds of play after that produced no
-		// shaft line at all, and that is precisely the stretch a reader asks
-		// about when a carried weapon stops leaving a furrow.  A rate limit
-		// covers the whole session instead: two and a half lines a second
-		// each, still readable, and no busy second can spend a budget that was
-		// meant to last.
+		// single stretch of play can spend all four inside its first five
+		// seconds, after which no shaft line appears at all.  That is
+		// precisely the stretch a reader asks about when a carried weapon
+		// stops leaving a furrow.  A rate limit covers the whole session
+		// instead: two and a half lines a second each, still readable, and no
+		// busy second can spend a budget that was meant to last.
 		constexpr int64_t kShaftLineGapMs = 400;
 
 		int64_t NowMs()
@@ -584,13 +582,9 @@ namespace Clipmap
 
 		// How much larger than the collision hull a measured mesh box may be
 		// before it is treated as a reading of something other than the
-		// object.  A hull is fitted around its mesh and is usually slightly
-		// larger, so a box a little bigger than the hull is expected; a box
-		// several times bigger means the node held the character and not the
-		// weapon, and a mark derived from it would put a furrow the width of a
-		// body through the snow.  The hull is what a refused reading falls
-		// back to, so the cost of refusing a good reading is the old look.
-		constexpr float kMeshSanityFactor = 6.0f;
+		// object.  The rule itself lives in MeshShape.h as MeshTrusted, so
+		// the carried weapon and the dropped object in ObjectStamps.cpp
+		// cannot drift apart.
 
 		// How much play one summary line covers.
 		constexpr int64_t kShaftTallySeconds = 5;
@@ -1141,7 +1135,7 @@ namespace Clipmap
 							const float hull = shapeExtent.length + shapeExtent.thickness;
 							const float box = mesh.unionX + mesh.unionY + mesh.unionZ;
 
-							haveMesh = box <= kMeshSanityFactor * (hull + 1.0f);
+							haveMesh = MeshShape::MeshTrusted(box, hull);
 
 							if (!haveMesh) {
 								LogShaftMesh(mesh,

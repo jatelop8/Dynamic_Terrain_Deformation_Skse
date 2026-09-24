@@ -11,6 +11,8 @@
 #include "ContactSampler.h"
 #include "Globals.h"
 #include "HeatSources.h"
+#include "LogBudget.h"
+#include "MeshGeometry.h"
 #include "Settings.h"
 #include "SnowSurface.h"
 #include "SurfaceProfiles.h"
@@ -302,13 +304,145 @@ namespace ObjectStamps
 		}
 
 		std::unordered_set<RE::FormID> g_reported;
+		// The reach line has a budget of its own.
+		//
+		// `g_reported` writes one line per object for the whole run, and the
+		// first scan of a dropped object usually happens while it is still in
+		// the air - `drop` positive, no snow over it, so the reach is zero and
+		// the line takes the ceiling branch instead.  The scan that matters is
+		// the one after it has landed, and a budget shared with the first is
+		// spent before that scan exists.  A dropped object reads a positive
+		// drop while it is in the air and a negative one once it has landed,
+		// so a budget shared between the two is spent on the reading that
+		// says nothing and the interesting one never prints.
+		std::unordered_set<RE::FormID> g_reachReported;
+		// The last buried-object reading, and how many have been written.
+		// See the line itself for why it is rate limited rather than given a
+		// budget per object.
+		int64_t g_buriedAt{ 0 };
+		size_t  g_buriedLines{ 0 };
 		// Lines already written this session; reset with the rest of the state.
 		size_t g_contactLines{ 0 };
 		// Lines reporting a shaft that was held back; same treatment.
 		size_t g_heldLines{ 0 };
 
+		// Milliseconds from a steady clock, for every rate limit in this file.
+		//
+		// It sits above its first caller instead of beside the other log
+		// state, because `LogObject` is the earliest one: a helper only the
+		// later half of a file can see is one the next earliest caller cannot
+		// use, and the compiler says so in a way that reads like a typo.
+		int64_t NowMs()
+		{
+			return std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch())
+				.count();
+		}
+
 		void LogObject(RE::TESObjectREFR* a_ref, Surfaces::Type a_surface,
-			const Clipmap::Stamp& a_stamp, float a_drop)
+			const Clipmap::Stamp& a_stamp, float a_drop, float a_depthCeiling, float a_reach)
+		{
+			if (!Settings::logObjectStamps) {
+				return;
+			}
+
+			const auto* base = a_ref->GetBaseObject();
+			if (!base) {
+				return;
+			}
+
+			// What a buried object is actually being answered with.
+			//
+			// A mark deepened to reach a buried object prints a line of its
+			// own, and what that line cannot say is why it did *not* print.
+			// An object read as being under snow, yet stamped with the
+			// shallow depth, has two readings in front of it and they call
+			// for opposite fixes: the reach came out zero, or the reach rule
+			// was never reached for that object.  Nothing already written
+			// tells them apart, because a budget spent on the first, airborne
+			// scan leaves the interesting one silent either way.
+			//
+			// So this line is unconditional: every object whose lowest point
+			// is under the snow surface prints the quantities the rule is
+			// made of - the drop, the reach derived from it, and the radius,
+			// depth and shoulder the mark ended up with - at one a second,
+			// with a session cap so a busy field cannot fill the file.  A
+			// radius near twice the object's own half width with a shoulder
+			// of 0.60 in one of these lines is the buried widening working;
+			// the same line reading `snowOver=0.0` says the rule never ran,
+			// and names the number that has to change.
+			if (a_drop < 0.0f && g_buriedLines < 60 &&
+				LogBudget::Allow(g_buriedAt, NowMs(), 1000)) {
+				++g_buriedLines;
+				logger::info(
+					"Object buried: {} drop={:.1f} snowOver={:.1f} radius={:.1f} "
+					"depth={:.1f} shoulder={:.2f} shape={} ceiling={:.1f}",
+					a_ref->GetName(), a_drop, a_reach, a_stamp.radius, a_stamp.depth,
+					a_stamp.shoulder, a_stamp.halfWidth > 0.0f ? "mesh" : "hull",
+					a_depthCeiling);
+			}
+
+			// The reach case is reported first and by its own wording and its
+			// own budget, because it is the one reading that says whether the
+			// mark got down to the object at all.  A mark that reaches is the
+			// difference between an object lying in a hole and an object that
+			// is not on screen: with the ceiling alone the depth is capped at
+			// the object's own thickness, which under a 35-unit blanket leaves
+			// a fur helmet thirty units under the snow and a dent exactly
+			// where it is not.
+			//
+			// It carries the shoulder as well as the radius, because a radius
+			// alone cannot say whether the mark covers the object: the flat
+			// floor is `radius * shoulder`, so the two numbers together are
+			// what says whether the snow was taken off the object or only off
+			// the ground under its middle.
+			if (a_reach > 0.0f) {
+				if (g_reachReported.size() >= 24 ||
+					!g_reachReported.insert(base->GetFormID()).second) {
+					return;
+				}
+				logger::info(
+					"Object stamp: {} on {:<7} radius={:.1f} depth={:.1f} drop={:.1f} "
+					"shoulder={:.2f} shape={} mark reaches the object, {:.1f} of snow "
+					"over its own underside",
+					a_ref->GetName(), Surfaces::Name(a_surface), a_stamp.radius, a_stamp.depth,
+					a_drop, a_stamp.shoulder, a_stamp.halfWidth > 0.0f ? "mesh" : "hull",
+					a_reach);
+				return;
+			}
+
+			if (g_reported.size() >= 24 ||
+				!g_reported.insert(base->GetFormID()).second) {
+				return;
+			}
+
+			// The ceiling is only worth naming when it was reached, because
+			// a mark that was cut down and one that was never near the limit
+			// read the same otherwise - and "the object is buried in its own
+			// dent" is fixed by raising this, while "the mark is too shallow"
+			// is fixed by lowering ObjectStampDepthScale.  Opposite edits.
+			if (a_depthCeiling > 0.0f) {
+				logger::info(
+					"Object stamp: {} on {:<7} radius={:.1f} depth={:.1f} drop={:.1f} shape={} "
+					"depth capped to {:.1f} by the object's own thickness",
+					a_ref->GetName(), Surfaces::Name(a_surface), a_stamp.radius, a_stamp.depth,
+					a_drop, a_stamp.halfWidth > 0.0f ? "mesh" : "hull", a_depthCeiling);
+				return;
+			}
+
+			logger::info(
+				"Object stamp: {} on {:<7} radius={:.1f} depth={:.1f} drop={:.1f} shape={}",
+				a_ref->GetName(), Surfaces::Name(a_surface), a_stamp.radius, a_stamp.depth,
+				a_drop, a_stamp.halfWidth > 0.0f ? "mesh" : "hull");
+		}
+
+		// An object that reached this far and was turned away by the contact
+		// gate.  Printed because the gate returning 0 is otherwise identical in
+		// the log to an object that was never scanned: a run where the limit
+		// rejected every loose item reads exactly like a run where loose items
+		// were not considered at all, and the two call for opposite fixes.
+		void LogObjectRefused(RE::TESObjectREFR* a_ref, float a_drop, float a_limit,
+			bool a_floating)
 		{
 			if (!Settings::logObjectStamps || g_reported.size() >= 24) {
 				return;
@@ -320,9 +454,350 @@ namespace ObjectStamps
 			}
 
 			logger::info(
-				"Object stamp: {} on {:<7} radius={:.1f} depth={:.1f} drop={:.1f}",
-				a_ref->GetName(), Surfaces::Name(a_surface), a_stamp.radius, a_stamp.depth,
-				a_drop);
+				"Object stamp: {} REFUSED - {} snow surface by {:.1f}, limit {:.1f} "
+				"(raise Object{}Limit to accept)",
+				a_ref->GetName(), a_floating ? "above" : "below", std::fabs(a_drop), a_limit,
+				a_floating ? "ContactTolerance" : "Sink");
+		}
+
+		// Why an object's mark is a circle when its mesh should have been read.
+		//
+		// The stamp line says `shape=mesh` or `shape=hull`, and the second is
+		// the one that needs this: without it, a session where every dropped
+		// object falls back to its hull looks exactly like a session where the
+		// mesh route was never added, and the two call for opposite fixes.
+		//
+		// Rate limited rather than given a one-shot budget.  ObjectStamps.cpp
+		// already has counters of the "first N lines only" kind, and the shaft
+		// path spent all of its own inside five seconds once and then went
+		// silent for the rest of the run - so the budget is deliberately not
+		// repeated here.  A gap covers the whole session instead, and the
+		// per-object FormID set keeps one repeated object from filling it.
+		int64_t g_objectMeshLineAt{ 0 };
+
+		// The gap between two object-mesh lines.  Clipmap.cpp's own shaft
+		// lines use five seconds for the same job; this one names the mesh
+		// route for loose objects, which changes when a player picks things
+		// up rather than every stride, so it is spaced wider.
+		constexpr int64_t kObjectMeshLineGapMs = 10000;
+
+		// The same time-gap treatment for the lift lines.  A lift happens when
+		// an object comes to rest, so it is rarer than a mesh reading and the
+		// gap can be wider without hiding anything a run needs to show.
+		int64_t           g_objectLiftLineAt{ 0 };
+		constexpr int64_t kObjectLiftLineGapMs = 10000;
+
+		// The physics behind a lift, spaced much tighter than the lift line.
+		//
+		// The lift line is wide because a lift is supposed to be a rare,
+		// settling event.  The object was found cycling - raised, back near
+		// the ground, raised again - which is a lift every scan, ten a second
+		// at the shipped interval, and the ten-second gap above would have
+		// shown one of those hundred and named the count as one.  These lines
+		// are what the cycle is diagnosed from, so they are spaced a second
+		// apart instead: still bounded on a long run, but dense enough that
+		// the number of rows is a reading of how often the lift fired.
+		int64_t           g_objectLiftPhysAt{ 0 };
+		constexpr int64_t kObjectLiftPhysGapMs = 1000;
+
+		// Its own budget, for the one reading taken after the restore.
+		//
+		// The physics line is written before the body is handed back, so its
+		// `motion=` describes the state the write created and cannot answer
+		// whether the restore took.  That is why the freezing was argued
+		// from a reading that never contained it.  This line is taken after
+		// the single restore call, so its `motion=` is the body as the
+		// solver has it.
+		int64_t           g_objectLiftRestoredAt{ 0 };
+		constexpr int64_t kObjectLiftRestoredGapMs = 1000;
+
+		// Its own budget, not shared with the physics line above.
+		//
+		// Two lines printed from the same call site with one budget would
+		// have the first one spend it and the second stay silent - and the
+		// silent one is the one that names the gap these two lines exist to
+		// measure.  A shared budget that hides its own second half is the
+		// failure this project has paid for before, so they are counted
+		// apart.
+		int64_t           g_objectLiftFrameAt{ 0 };
+		constexpr int64_t kObjectLiftFrameGapMs = 1000;
+
+		// And a third, for the same reason again.
+		//
+		// A shared budget that hides its own second half is the failure this
+		// project has paid for before - this line is the one that says
+		// whether the write landed, so it must not be the one that stays
+		// silent because a neighbour printed first.
+		int64_t           g_objectLiftWriteAt{ 0 };
+		constexpr int64_t kObjectLiftWriteGapMs = 1000;
+
+		// A dead constant, and it is kept rather than deleted so that the
+		// next reader does not add it back.
+		//
+		// `kLiftWarpSpeed` decided how large a raise had to be before the
+		// body's velocity was zeroed with it, on the theory that a warp is a
+		// teleport and a solver answers a teleport with the relative motion
+		// it implies.  There is no warp left to account for, and a clearance
+		// that fires on a raise the player caused is a clearance of the
+		// player's own push.
+		//
+		// A constant that only appears in a comment is a liability rather
+		// than a help: an unused `constexpr` at namespace scope is not
+		// diagnosed, so it would sit here looking like live tuning to build
+		// on.  Removing it is what makes the removal of the clear visible in
+		// the file.
+		//
+		// The height terms are the ones that decide whether an object is
+		// raised, so they are worth seeing; but they are printed per scan, and
+		// a run with an object on the ground scans it several times a second.
+		// Same rule as the lift line: a budget, so the terms are still there
+		// after the opening seconds.
+		int64_t           g_objectTermsAt{ 0 };
+		constexpr int64_t kObjectTermsGapMs = 2000;
+
+		void LogObjectMeshRefused(RE::TESObjectREFR* a_ref, const char* a_why)
+		{
+			if (!Settings::logObjectStamps) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectMeshLineAt, NowMs(), kObjectMeshLineGapMs)) {
+				return;
+			}
+
+			logger::info(
+				"Object mesh: {} - {}; the collision hull's circle is in use "
+				"(see MeshGeometry.h for what refuses a reading)",
+				a_ref->GetName(), a_why);
+		}
+
+		// An object raised onto the snow, and by how much.
+		//
+		// Rate limited by a time gap rather than by a one-shot count.  A
+		// budget spent once would go silent after the first few objects and
+		// then a run where nothing was lifted and a run where the lift was
+		// removed would look the same - which is the failure the shaft lines
+		// already cost this project once.
+		//
+		// The three numbers are what make it checkable: the lift applied, the
+		// object's own height it was derived from, and the blanket's thickness
+		// it was clamped against.  Without them "it moved" and "it moved the
+		// right amount" are the same line.
+		void LogObjectLifted(RE::TESObjectREFR* a_ref, float a_rise,
+			float a_height, float a_lift)
+		{
+			if (!Settings::logObjectStamps) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectLiftLineAt, NowMs(), kObjectLiftLineGapMs)) {
+				return;
+			}
+
+			logger::info(
+				"Object lifted: {} by {:.1f} - its own height is {:.1f} and the "
+				"blanket is {:.1f}, so its top now sits at the snow",
+				a_ref->GetName(), a_rise, a_height, a_lift);
+		}
+
+		// How long the body has been standing still for - the one reading here
+		// that changes on its own.
+		//
+		// The line this replaces printed the speed and spin the body happened
+		// to hold at the instant of the write.  Both were read at that instant
+		// and both were therefore always the same: a body that has just been
+		// written has been given no velocity yet.  Eight raises of a helmet
+		// printed `speed=(0.00,0.00,0.00) spin=(0.00,0.00,0.00) motion=3
+		// restored=1` every time - four readings that cannot disagree with
+		// anything, printed next to the object being reported in game as
+		// unmovable.
+		//
+		// `rest` is `deactivationNumInactiveFrames`, which the solver
+		// increments every step it finds the body still: a body that really is
+		// resting climbs towards the engine's own threshold, and a body being
+		// pushed, or integrated and drifting, reads small.  It is a count of
+		// steps and not a velocity, so unlike a velocity it keeps the history
+		// of the last few hundred milliseconds rather than only the present
+		// frame.  That is what makes it able to contradict the rest of this
+		// line.
+		//
+		// `lift` is printed beside it because it is the other number that was
+		// silently at its limit while nothing else changed: the surface the
+		// object is being raised towards is `landZ + lift`, and `lift` reads
+		// the blanket's whole thickness on every line of a run - meaning the
+		// rule is not finding a snow surface that varies, it is finding one
+		// that is always the full 35.
+		void LogLiftPhysics(RE::bhkNiCollisionObject* a_object, float a_beforeZ,
+			float a_rise, float a_afterZ, float a_lift)
+		{
+			if (!Settings::logObjectStamps || !a_object || !a_object->body.get()) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectLiftPhysAt, NowMs(), kObjectLiftPhysGapMs)) {
+				return;
+			}
+
+			auto* rigid = a_object->body.get()->AsBhkRigidBody();
+			auto* hkpRigid = rigid ?
+				skyrim_cast<RE::hkpRigidBody*>(rigid->referencedObject.get()) :
+				nullptr;
+			if (!hkpRigid) {
+				return;
+			}
+
+			const auto& motion = hkpRigid->motion;
+
+			float lin[4];
+			float ang[4];
+			_mm_storeu_ps(lin, motion.linearVelocity.quad);
+			_mm_storeu_ps(ang, motion.angularVelocity.quad);
+
+			logger::info(
+				"Lift physics: centre.z {:.2f} -> {:.2f} (raised {:.2f}) "
+				"| speed=({:.2f},{:.2f},{:.2f}) spin=({:.2f},{:.2f},{:.2f}) "
+				"| lift={:.2f} motion={} rest={}",
+				a_beforeZ, a_afterZ, a_rise,
+				lin[0], lin[1], lin[2], ang[0], ang[1], ang[2],
+				a_lift,
+				static_cast<int>(motion.type.get()),
+				static_cast<int>(motion.deactivationNumInactiveFrames[0]));
+		}
+
+		// The body's state after it has been handed back, which is the only
+		// reading in the log that can say whether the restore took.
+		//
+		// `motion=` here is read after the single restore call, so 1 means
+		// the body is dynamic again and 4 means it is still keyframed.  The
+		// same field is printed by the physics line above, but that one is
+		// read before the restore and is therefore always the state the
+		// write created - a reading that cannot answer the question it looks
+		// like it answers.
+		//
+		// Paired with the next line's `scan`, this separates the two ways
+		// one symptom can be produced: `motion=4` is a restore that did not
+		// take (nothing will ever push it), while `motion=1` with the next
+		// scan lower is a restore that took and a body that is awake with
+		// nothing under it (the raise undoes itself, ten times a second).
+		void LogLiftRestored(RE::bhkNiCollisionObject* a_object, RE::TESObjectREFR* a_ref)
+		{
+			if (!Settings::logObjectStamps || !a_object || !a_object->body.get()) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectLiftRestoredAt, NowMs(), kObjectLiftRestoredGapMs)) {
+				return;
+			}
+
+			auto* rigid = a_object->body.get()->AsBhkRigidBody();
+			auto* hkpRigid = rigid ?
+				skyrim_cast<RE::hkpRigidBody*>(rigid->referencedObject.get()) :
+				nullptr;
+			if (!hkpRigid) {
+				return;
+			}
+
+			const auto& motion = hkpRigid->motion;
+
+			float lin[4];
+			_mm_storeu_ps(lin, motion.linearVelocity.quad);
+
+			RE::hkVector4 massCentre;
+			rigid->GetCenterOfMassWorld(massCentre);
+			float parts[4];
+			_mm_storeu_ps(parts, massCentre.quad);
+
+			// Where the scene graph is actually drawing.
+			//
+			// `a_ref->GetPosition()` is the reference's own record - the
+			// field this block itself writes - so it cannot witness its own
+			// write.  A node's `world.translate` is what the renderer uses,
+			// and with the warp removed this is the one reading that can
+			// answer what is left of the question: whether the engine copies
+			// the body's position back over the node between scans, which
+			// would erase the raise and put the object under the snow again
+			// while every other number on this line still looked right.
+			const auto* renderNode = a_ref->Get3D();
+			const float rendered = renderNode ? renderNode->world.translate.z : 0.0f;
+
+			logger::info(
+				"Lift restored: node {:.2f} | centre {:.2f} motion={} rest={} "
+				"| speed=({:.2f},{:.2f},{:.2f}) | render {:.2f}",
+				a_ref->GetPosition().z,
+				parts[2] * RE::bhkWorld::GetWorldScaleInverse(),
+				static_cast<int>(motion.type.get()),
+				static_cast<int>(motion.deactivationNumInactiveFrames[0]),
+				lin[0], lin[1], lin[2],
+				rendered);
+		}
+
+		// The two z values that are not the same number, printed side by side.
+		//
+		// `SetPosition` moves the reference's own node; the scan's `centre`
+		// is the physics body's centre of mass.  They are read from different
+		// layers of the engine and were being compared as if they were one
+		// quantity - which is how a lift of 1.61 came to be reported next to
+		// a centre that had moved 45.  Nothing in the log said which of the
+		// two each number belonged to, so the gap could be read as the move
+		// being amplified, or as the read-back being wrong, and those need
+		// opposite fixes.
+		//
+		// So both are printed for the same instant: the node before and
+		// after, the mass centre before and after, and the raise that was
+		// asked for.  If the node moved by the raise and the centre did not,
+		// the two layers disagree about where the object is.  If both moved
+		// by more than the raise, something outside this block is moving the
+		// object.
+		void LogLiftFrames(RE::TESObjectREFR* a_ref, float a_nodeBefore, float a_nodeAfter,
+			float a_centreBefore, float a_centreAfter, float a_rise)
+		{
+			if (!Settings::logObjectStamps) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectLiftFrameAt, NowMs(), kObjectLiftFrameGapMs)) {
+				return;
+			}
+
+			logger::info(
+				"Lift frames: asked {:.2f} | node {:.2f} -> {:.2f} (moved {:.2f}) "
+				"| centre {:.2f} -> {:.2f} (moved {:.2f})",
+				a_rise,
+				a_nodeBefore, a_nodeAfter, a_nodeAfter - a_nodeBefore,
+				a_centreBefore, a_centreAfter, a_centreAfter - a_centreBefore);
+		}
+
+		// Where the write actually landed.
+		//
+		// The line this replaces printed a `from` read out of the scan, on the
+		// theory that it and the value written a moment later belonged to the
+		// same instant.  They do not: the scan runs at 0.1 s and this line is
+		// written once a second, so `from` could be a tenth of a second - and
+		// several units of drift - older than the write it was being
+		// subtracted from.  That subtraction is what produced the "a raise of
+		// 1.61 moved the centre 45" reading, and two rounds of code were
+		// written to explain a number that was arithmetic on two clocks.
+		//
+		// So the three values printed are the ones that can be compared:
+		//
+		//   scan  -> what the last scan left as the object's centre
+		//   wrote -> what this call put in (`centre + rise`), world units
+		//   after -> the body's centre, read immediately after the write
+		//
+		// `wrote` and `after` are both read at the write, so they are the pair
+		// that says whether the placement landed.  `scan` is printed beside
+		// them only so a reader can see how far apart the two clocks are, and
+		// it is named `scan` rather than `from` so that it cannot be mistaken
+		// for the same instant a second time.
+		void LogLiftWrite(RE::TESObjectREFR* a_ref, float a_scanZ, float a_wroteZ,
+			float a_afterZ)
+		{
+			if (!Settings::logObjectStamps) {
+				return;
+			}
+			if (!LogBudget::Allow(g_objectLiftWriteAt, NowMs(), kObjectLiftWriteGapMs)) {
+				return;
+			}
+
+			logger::info(
+				"Lift write: scan {:.2f} -> wrote {:.2f} | body after {:.2f} (landed {})",
+				a_scanZ, a_wroteZ, a_afterZ,
+				std::fabs(a_wroteZ - a_afterZ) <= 0.01f ? "yes" : "no");
 		}
 
 		// A shaft that was asked for a mark and denied one, because it already
@@ -390,11 +865,27 @@ namespace ObjectStamps
 		{
 			RE::NiPoint3 centre;
 			float        radius{ 0.0f };
+			// The collidable this bound was measured from.  Kept so the mesh
+			// behind it can be read later without a second walk of the scene
+			// graph: the walk that produced these numbers is the walk that
+			// reaches the node the mesh hangs off, and repeating it would
+			// both cost another traversal and risk picking a different
+			// collidable than the one these numbers describe.
+			RE::bhkNiCollisionObject* collidable{ nullptr };
 			// The long and short half axes, kept from the shape itself.  A
 			// bound radius alone cannot say "long and thin", and an arrow is
 			// the one object where that distinction is the whole point.
 			float        length{ 0.0f };
 			float        thickness{ 0.0f };
+			// How far this shape reaches vertically from its own centre.
+			// Kept apart from `radius` because the two are different
+			// distances: `radius` has to cover the shape in every direction
+			// and for a box is its space diagonal, while this is only the
+			// upward and downward reach.  A drop test that subtracts the
+			// diagonal from the centre puts the object's lowest point well
+			// below the ground it is resting on, and its mark lands under
+			// the object rather than at its feet.
+			float        vertical{ 0.0f };
 			// Which way the long axis points, in world space.  Without it the
 			// only ray a shaft can be probed with is a vertical one, which
 			// lands under the shaft's own origin by construction - the very
@@ -449,6 +940,7 @@ namespace ObjectStamps
 				a_root, [&](RE::bhkNiCollisionObject* a_object) -> RE::BSVisit::BSVisitControl {
 					++visited;
 					ShapeBound bound{};
+					bound.collidable = a_object;
 					if (ActorShapes::GetBound(a_object, bound.centre, bound.radius) &&
 						bound.radius > 0.1f) {
 						// A second, cheap walk of the same node for the two
@@ -458,6 +950,7 @@ namespace ObjectStamps
 						if (ActorShapes::GetExtent(a_object, bound.centre, extent)) {
 							bound.length = extent.length;
 							bound.thickness = extent.thickness;
+							bound.vertical = extent.vertical;
 							bound.fromChildren = extent.fromChildren;
 							bound.childCount = extent.childCount;
 							bound.measured = extent.measured;
@@ -527,7 +1020,20 @@ namespace ObjectStamps
 				// radius but no half axes, and every downstream reader that
 				// cannot tell the two apart will read the bound radius as a
 				// shaft half length - which is where 302.7 came from.
-				a_out[0] = ShapeBound{ bound.center, bound.radius };
+				//
+				// Written field by field rather than as a braced list.  A
+				// positional list is only correct while the field order is,
+				// and this struct gained a `collidable` member between
+				// `radius` and `length`; a list of two values then depends on
+				// the compiler's own reading of which members it can skip.
+				// Measured on this toolchain it happens to leave `collidable`
+				// null and put the radius where it belongs, which is the
+				// outcome wanted - there is no mesh here, because there was no
+				// collidable - but "happens to" is not a guarantee to build
+				// a fallback on.
+				a_out[0] = ShapeBound{};
+				a_out[0].centre = bound.center;
+				a_out[0].radius = bound.radius;
 				a_out[0].fromWorldBound = true;
 				return 1;
 			}
@@ -560,6 +1066,55 @@ namespace ObjectStamps
 			const size_t shapeCount = GatherShapes(root, shapes);
 			if (shapeCount == 0) {
 				return 0;
+			}
+
+			// The object's own mesh, when it can be read.
+			//
+			// Everything above measures the collision hull, and a hull is a
+			// capsule or a box.  Two objects of the same size therefore get
+			// the same hull and would leave the same mark whatever their
+			// meshes look like - which is why a dropped helmet stamped a
+			// circle.  The mesh has the shape: BSTriShape keeps a CPU-side
+			// copy of its vertices, so the object's own geometry can be read
+			// rather than inferred, exactly as the carried-weapon path
+			// already does.
+			//
+			// The fit is cached per mesh and only ever computed once, because
+			// a mesh's own shape does not change - only the transform over it
+			// does.  A scene full of unmeasured objects therefore costs one
+			// walk per distinct mesh per session.
+			//
+			// Refusing is not a failure.  The hull is what this code used
+			// before the mesh could be read at all, so a refused reading
+			// costs the shape and not the mark, and the log says which it
+			// was.
+			MeshGeometry::Result mesh{};
+			bool                haveMesh = false;
+
+			if (Settings::objectStampFromMesh && shapes[0].collidable) {
+				const bool measured = MeshGeometry::Measure(
+					MeshGeometry::SceneObject(shapes[0].collidable), mesh);
+
+				if (measured && !mesh.skinned) {
+					// The same sanity rule the weapon path applies, so a node
+					// that held the whole character rather than the object
+					// cannot put a body-sized mark through the snow.
+					const float hull =
+						shapes[0].length + shapes[0].thickness + shapes[0].radius;
+					const float box = mesh.unionX + mesh.unionY + mesh.unionZ;
+
+					haveMesh = MeshShape::MeshTrusted(box, hull);
+
+					if (!haveMesh) {
+						LogObjectMeshRefused(a_ref,
+							"union box far larger than the collision hull");
+					}
+				} else {
+					LogObjectMeshRefused(a_ref,
+						mesh.skinned ? "skinned mesh" :
+									   "no geometry, no CPU-side vertices, or no "
+									   "layout agreed");
+				}
 			}
 
 		const bool shaft = IsShaft(a_ref);
@@ -599,8 +1154,27 @@ namespace ObjectStamps
 			// real contact point first (the engine's reported hit if we have
 			// it, otherwise a short ray down the shaft) and everything below
 			// uses that point.  Anything else keeps the bound it already had.
+			// The object's lowest point, and the question of which half
+			// extent measures it.
+			//
+			// This used to read `shapes[0].centre.z - shapes[0].radius`.
+			// `radius` is a single bound that has to cover the shape in
+			// every direction, so for a box it is the space diagonal
+			// `sqrt(hx^2 + hy^2 + hz^2)` - a horizontal size pressed into
+			// service as a vertical one.  Measured in game on a dropped fur
+			// helmet: `radius` 12.62 against a shape whose own vertical half
+			// extent was 4.16, so the "lowest point" was placed 8.47 units
+			// below where the helmet really was.  `drop` came out 17.7
+			// instead of about 9, and the mark was stamped under the helmet
+			// rather than at its rim - which reads in game as the object
+			// still being buried, however the mark itself is shaped.
+			//
+			// The vertical reach is the correct quantity and it is the one
+			// the mesh reading also offers, so the two agree instead of
+			// describing different objects.
 			ContactSampler::Output contact{};
-			float                 groundZ = shapes[0].centre.z - shapes[0].radius;
+			float                 groundZ = shapes[0].centre.z -
+				(shapes[0].vertical > 0.0f ? shapes[0].vertical : shapes[0].radius);
 			const RE::NiPoint3    boundCentre{ shapes[0].centre.x, shapes[0].centre.y,
 				   shapes[0].centre.z };
 			RE::NiPoint3 contactPoint = boundCentre;
@@ -764,7 +1338,9 @@ namespace ObjectStamps
 				LogContact(a_ref, contact, query, miss, true);
 			} else {
 				for (size_t i = 1; i < shapeCount; ++i) {
-					groundZ = std::min(groundZ, shapes[i].centre.z - shapes[i].radius);
+					const float reach = shapes[i].vertical > 0.0f ? shapes[i].vertical :
+																	shapes[i].radius;
+					groundZ = std::min(groundZ, shapes[i].centre.z - reach);
 				}
 			}
 
@@ -776,9 +1352,67 @@ namespace ObjectStamps
 				return 0;
 			}
 
-			const float surfaceZ = landZ + SnowSurface::LiftAt(probe.x, probe.y);
-			const float drop = groundZ - surfaceZ;
-			if (drop > Settings::objectContactTolerance || drop < -Settings::objectSinkLimit) {
+			const float lift     = SnowSurface::LiftAt(probe.x, probe.y);
+			const float surfaceZ = landZ + lift;
+			const float drop     = groundZ - surfaceZ;
+
+			// Every term of the height question, and the bound they were
+			// taken from.
+			//
+			// A helmet read `drop = 2.6` after the vertical-reach fix, where
+			// a helmet standing on the bare terrain under a 35-unit blanket
+			// should read about -8.2 (its own height, below the snow).  Two
+			// readings of that number are consistent with it: the bound the
+			// height came from is not the helmet, or the terrain under this
+			// point is not the terrain the helmet is resting on.  Neither can
+			// be told apart from the outside, so the terms are printed - the
+			// bound's own centre and reach, the land height, the blanket, and
+			// the resulting drop.  Printing the answer alone is what made the
+			// last round's log ambiguous.
+			if (Settings::logObjectStamps &&
+				LogBudget::Allow(g_objectTermsAt, NowMs(), kObjectTermsGapMs)) {
+				logger::info(
+					"Object height terms: land={:.2f} lift={:.2f} surface={:.2f} "
+					"| bound0 centre.z={:.2f} vertical={:.2f} radius={:.2f} "
+					"length={:.2f} thickness={:.2f} fromChildren={} children={} "
+					"measured={} extentStep={} | groundZ={:.2f} drop={:.2f} "
+					"| shapes={} centreXY=({:.1f},{:.1f})",
+					landZ, lift, surfaceZ,
+					shapes[0].centre.z, shapes[0].vertical, shapes[0].radius,
+					shapes[0].length, shapes[0].thickness,
+					shapes[0].fromChildren, shapes[0].childCount,
+					shapes[0].measured, shapes[0].extentStep,
+					groundZ, drop,
+					shapeCount, shapes[0].centre.x, shapes[0].centre.y);
+			}
+
+			// Two different questions, so two different limits.
+			//
+			// Above the snow: how far an object may float over the surface and
+			// still count as resting on it.  A fixed, small allowance, because
+			// "in the air" is the thing being excluded.
+			//
+			// Below the snow: how far down an object may sit.  An object lying
+			// on the ground under the blanket reads drop = -lift, and lift is
+			// the snow's whole thickness there - 35 units by default.  A fixed
+			// limit cannot tell "buried to the ground, as it really is" from
+			// "clipped through the world", and when the limit is set tighter
+			// than the blanket (an ini with ObjectSinkLimit 60 and a tolerance
+			// of 10 is the case that exposed this) the honest resting case is
+			// rejected outright: the object leaves no mark at all, which reads
+			// in game as gear that fell through the snow and vanished.
+			//
+			// The blanket's own thickness is the honest bound.  It comes from
+			// this point's own lift, so it tracks shelter, weather and distance
+			// fade instead of guessing one number for every place and hour.
+			float sinkLimit = std::max(Settings::objectSinkLimit, lift);
+			if (Settings::objectSinkFollowsSnow) {
+				sinkLimit = std::max(sinkLimit, lift + Settings::objectSinkSlack);
+			}
+
+			if (drop > Settings::objectContactTolerance || drop < -sinkLimit) {
+				LogObjectRefused(a_ref, drop,
+					drop > 0.0f ? Settings::objectContactTolerance : sinkLimit, drop > 0.0f);
 				return 0;
 			}
 
@@ -790,6 +1424,182 @@ namespace ObjectStamps
 				Surfaces::RimHeight(0.0f, response.rimScale) <= 0.0f) {
 				return 0;
 			}
+
+			// Lift the object so that its top sits at the snow, rather than
+			// leaving it resting on the terrain under the blanket.
+			//
+			// The raise is a displacement of the terrain *mesh*; the engine's
+			// collision - and therefore GetLandHeight - knows nothing about
+			// it.  So a dropped object falls until its collision meets the
+			// bare terrain and stops there, while the snow surface stands
+			// `lift` units above it.  Since `drop = groundZ - (landZ + lift)`,
+			// an object resting on the ground under a full blanket reads a
+			// drop of about minus the blanket's own thickness, which puts the
+			// snow surface a blanket's depth over its head.  An object
+			// shorter than the blanket is therefore buried whole, whatever
+			// the mark does.
+			//
+			// Raising the object by `lift - its own height` puts its top at
+			// the surface, so it is visible, kickable, and has a mark at its
+			// own feet.  The height is the shape's own vertical reach, the
+			// same quantity the drop test uses, so the two cannot disagree
+			// about how tall the object is.
+			//
+			// A physics body that owns a shape is not a thing to move.
+			//
+			// A dropped object carries a `bhkRigidBody` whose transform is
+			// authoritative.  Writing the referenced object's position does
+			// not move it, and moving the node the body hangs off is
+			// overwritten by the solver on its next step.  Bracketing the
+			// write with a motion-type switch does move it, but a body
+			// switched back to dynamic and then warped onto the node is
+			// integrated against nothing and cycles, and that same warp
+			// throws away any displacement a push had just produced - which
+			// is what an object that cannot be kicked is.
+			//
+			// So the raise is a placement and nothing more, and it is stated
+			// against a reading taken in the same instant as the write.  A
+			// body at rest in snow reads its mass centre and its reference
+			// position within a few units of each other, and the raise asked
+			// for is usually under ten, so the two are easy to confuse - the
+			// more so when the scan that reads the reference runs ten times a
+			// second and the line that prints it once.  Two samples a tenth
+			// of a second apart read as a throw that never happened.
+			//
+			// The write is skipped while the object already stands at the
+			// height the rule asks for, so nothing re-runs on every scan.
+			// What is left is the state a push needs: a body the solver
+			// integrates, whose own motion the next scan can see.
+			if (Settings::objectLiftToSnow && !shaft && lift > 0.0f &&
+				surface == Surfaces::Type::kSnow && shapes[0].vertical > 0.0f) {
+				const float objectHeight = 2.0f * shapes[0].vertical;
+				const float lowestZ = shapes[0].centre.z - shapes[0].vertical;
+
+				const float rise = MeshShape::LiftOntoSnow(
+					lowestZ, objectHeight, surfaceZ, lift, Settings::objectLiftSlack);
+
+				// The rule's answer, with nothing done to the body.
+				//
+				// `rise` says how far the object has to travel; nothing says
+				// whether it is worth writing, so the two cases are named:
+				// inside the settled band the object is already where the rule
+				// wants it and is left alone, outside it the write happens.  A
+				// body left alone is one the solver integrates, which is what
+				// a push needs.
+				//
+				// If the player pushes it back into the snow, `rise` grows
+				// past the band and the block below runs again, which is the
+				// intended behaviour rather than a fight with the solver.
+				// The action this scan takes is recorded rather than acted on
+				// in place, so that the question "does the body have to be
+				// handed back?" is asked once, at the block's exit, of
+				// `LiftMustFreeBody` - see that function for why the answer
+				// cannot be left to the branches.
+				auto action = MeshShape::LiftAction::kNone;
+				if (rise <= MeshShape::LiftSettledBand(
+						objectHeight, Settings::objectLiftSlack)) {
+					action = MeshShape::LiftAction::kLeftInPlace;
+				} else if (rise > Settings::objectLiftSlack) {
+					action = MeshShape::LiftAction::kWrote;
+					// `beforeZ` is the body's mass centre, and it is the only
+					// `before` this move may be stated against.
+					//
+					// A `before` taken from the scan and an `after` read at the
+					// write are not the same instant: the scan runs ten times a
+					// second and a body resting in snow drifts several units in
+					// that time, so the difference between the two reads as a
+					// throw.  The write is therefore stated against the mass
+					// centre, which is read in the instant of the write, and
+					// `Lift write` prints the three values on one line.
+					const float beforeZ = shapes[0].centre.z;
+					const auto  nodeBefore = a_ref->GetPosition();
+
+					// No motion-type switch on this write, and no warp.
+					//
+					// The write is a plain placement of the referenced
+					// object's position.  `a_warp = true` would put the body
+					// where the node was put, after which the solver
+					// integrates it against nothing and it falls - that is the
+					// rise the object showed on every scan - and the same warp
+					// discards the displacement a push had just produced.  Both
+					// the rise and the unkickable object are that one argument,
+					// so the body is left exactly as the solver had it.
+					const auto pos = a_ref->GetPosition();
+					const float wroteZ = beforeZ + rise;
+					a_ref->SetPosition(RE::NiPoint3{ pos.x, pos.y, wroteZ });
+
+					// Nothing is done to the body here.
+					//
+					// No motion type is switched, so there is no state to hand
+					// back and no `a_force` question to answer.  The one
+					// write-through is at the block's single exit below, where
+					// `LiftMustFreeBody` decides whether it is needed, so a
+					// branch added later cannot skip it by not repeating it.
+					a_ref->AddChange(RE::TESObjectREFR::ChangeFlags::kHavokMoved);
+
+					// The velocity is not cleared here.
+					//
+					// A clearance keyed on the size of the raise also fires on
+					// a raise the player caused, which is a clearance of the
+					// player's own push.  There is no warp to answer for, and
+					// a body that has just been placed is not moving, so there
+					// is nothing to clear: whatever velocity it carries is the
+					// solver's to compute from the collision it lands on.
+
+					// Read the centre back from the body that own the
+					// transform, immediately, so "the move stuck" is a
+					// measurement and not a hope about the next scan.
+					float afterZ = beforeZ;
+					if (shapes[0].collidable && shapes[0].collidable->body.get()) {
+						if (auto* rigid =
+								shapes[0].collidable->body.get()->AsBhkRigidBody()) {
+							RE::hkVector4 massCentre;
+							rigid->GetCenterOfMassWorld(massCentre);
+							float parts[4];
+							_mm_storeu_ps(parts, massCentre.quad);
+							afterZ = parts[2] * RE::bhkWorld::GetWorldScaleInverse();
+						}
+					}
+					const auto nodeAfter = a_ref->GetPosition();
+					LogLiftWrite(a_ref, beforeZ, wroteZ, afterZ);
+					LogLiftPhysics(shapes[0].collidable, beforeZ, rise, afterZ, lift);
+					LogLiftFrames(a_ref, nodeBefore.z, nodeAfter.z, beforeZ, afterZ, rise);
+
+					contactPoint.z += rise;
+					groundZ += rise;
+					LogObjectLifted(a_ref, rise, objectHeight, lift);
+				}
+
+				// The single place the move is written through.
+				//
+				// There is no motion type left to hand back - the write no
+				// longer switches one - so what this exit does is the
+				// placement itself: `a_warp = false`, which writes the node
+				// through without warping the body to it.  `true` would put
+				// the body where the node is and leave the solver to integrate
+				// it against nothing, which is the cycle again; `false` leaves
+				// the body where the solver last had it, resting on what it
+				// was resting on, so gravity has nothing to close and the next
+				// scan has nothing to raise.
+				//
+				// Asked of `LiftMustFreeBody` rather than repeated at each
+				// exit, so a branch added later cannot skip the write-through
+				// by simply not repeating the call.
+				if (MeshShape::LiftMustFreeBody(action)) {
+					if (a_ref->Get3D()) {
+						a_ref->Update3DPosition(false);
+						a_ref->AddChange(RE::TESObjectREFR::ChangeFlags::kHavokMoved);
+					}
+				}
+			}
+
+			// The state the body was left in, read after the restore above.
+			//
+			// The physics line is written before the restore and so cannot
+			// say whether the restore took; this is the reading that can.
+			// `shapes` is a fixed array, and a null collidable is one the
+			// line declines to print rather than one it dereferences.
+			LogLiftRestored(shapes[0].collidable, a_ref);
 
 			const size_t take = shaft ? 1 : std::min(shapeCount, a_budget);
 			for (size_t i = 0; i < take; ++i) {
@@ -817,6 +1627,36 @@ namespace ObjectStamps
 					Settings::stampDecayPerSecond * response.decayScale * Weather::DecayScale(),
 					0.0f, 0.9999f);
 
+				// The object's own half thickness in world units, set by the
+				// mesh arm below when a reading is available.  Zero means
+				// "not measured", and the depth ceiling is skipped rather than
+				// applied to a hull the mesh did not confirm.  Declared out
+				// here because the log line below needs it after the branch.
+				float halfThinWorld = 0.0f;
+				// Set to the ceiling only when the ceiling actually cut the
+				// mark down, so the log can name it.
+				float depthCeiling = 0.0f;
+
+				// How much snow is stacked over the object's own underside.
+				//
+				// `drop` is the object's lowest point measured against the
+				// snow surface, so its negative is the depth of snow the
+				// object is under, and a mark that deep ends level with the
+				// object's own bottom.  Bounded by the blanket, because a
+				// mark cannot remove snow that is not there: an object that
+				// has fallen through the world reads a drop of hundreds and
+				// must not be answered with a shaft to match.
+				//
+				// It is worked out here rather than inside the mark's own
+				// branch because the reporter below needs it too, and a
+				// second copy of this arithmetic is a second answer waiting
+				// to disagree with the first.
+				//
+				// Named for the snow and not `reach`, which this function
+				// already uses for a shape's own vertical extent.
+				const float snowOver =
+					drop < 0.0f ? std::min(-drop, std::max(lift, 0.0f)) : 0.0f;
+
 				if (shaft) {
 					// Pin-prick: a fixed, small radius instead of the shaft's
 					// own bound, and no rim at all, so nothing is thrown up
@@ -832,18 +1672,184 @@ namespace ObjectStamps
 					stamp.radius =
 						shape.radius * Settings::objectStampRadiusScale * response.radiusScale;
 
-					const float bulk = std::clamp(
+					// The depth an object sinks by is its own thickness, not
+					// an estimate made from how big it is.
+					//
+					// `bulk` was radius over objectFullSizeRadius: a number
+					// that says how large the object is and nothing at all
+					// about how far it lies below its own centre line.  A
+					// helmet and a plank of the same bound radius sank by the
+					// same amount, and the amount was a property of the INI
+					// rather than of the thing in the snow.  The mesh knows
+					// the honest answer - it is how thick the object is where
+					// it is lying.
+					float bulk = std::clamp(
 						shape.radius / std::max(Settings::objectFullSizeRadius, 1.0f), 0.0f, 1.0f);
+
+					// The shape, when the object's own mesh could be read.
+					//
+					// Only the first bound has a mesh behind it - the
+					// measurement follows one collidable, and an object with
+					// several meshes reports the union box rather than one
+					// box per mesh - so the later bounds keep the round mark
+					// they have always had rather than being given a shape
+					// that was not measured for them.
+					if (haveMesh && i == 0 && mesh.local.halfLength > 0.0f) {
+						// The bands are in the mesh's own units and the mark
+						// is drawn in world units, so the mesh's own scale is
+						// the ratio between the two half lengths - the
+						// transform's scale without having to ask the
+						// transform.
+						const float meshToWorld =
+							mesh.world.halfLength / mesh.local.halfLength;
+
+						// The object's own long axis, which is the principal
+						// direction of its vertices rather than the longest
+						// side of a box - so a helmet's rim and a curved
+						// blade both aim where the object actually points.
+						stamp.forwardX = mesh.world.ax;
+						stamp.forwardY = mesh.world.ay;
+
+						// The mark is the object's own footprint in the snow,
+						// so its two half axes come from the object and not
+						// from the hull's single radius.
+						//
+						// The long axis is the mesh's own half length, but it
+						// is clamped to the hull's radius times the same
+						// ceiling the radius scale allows.  A mesh's half
+						// length and a hull's radius are two different
+						// measurements of the same object - one along its
+						// principal axis and one around its widest cross
+						// section - and for a staff the first is many times
+						// the second.  Taking the mesh value unclamped would
+						// stretch every long object's mark by that ratio in
+						// one step, which is a shape change no one asked for;
+						// the clamp keeps the improvement inside the size the
+						// object was already stamping at.
+						const float hullRadius =
+							shape.radius * Settings::objectStampRadiusScale * response.radiusScale;
+
+						stamp.radius = std::clamp(mesh.world.halfLength,
+							std::max(0.25f * hullRadius, Settings::objectStampMinRadius),
+							Settings::objectStampMaxRadius);
+
+						// The short axis is the width across the part of the
+						// object that is actually in the snow, not across its
+						// widest point.  A helmet's crown is wider than its
+						// rim, and the rim is what is touching.
+						const float span = std::clamp(mesh.world.halfLength /
+														  std::max(stamp.radius, 1e-3f),
+							0.0f, 1.0f);
+						const float radial = MeshShape::WidthOver(mesh.local, -span, span) *
+							meshToWorld;
+
+						stamp.halfWidth = std::max(radial, 0.05f);
+
+						// The honest sink, as a fraction of the mark's own
+						// extent: how thick the object is, over how long it
+						// is drawn.
+						//
+						// This is a different quantity from the hull estimate
+						// it replaces - that one was the object's size against
+						// a nominal size, which says how big it is and nothing
+						// about how far it lies below its own centre line.
+						// Both are "some property of the object" by design,
+						// because ObjectStampDepthScale multiplies it, so the
+						// two are interchangeable as a scale and not as a
+						// measurement.  The mesh value is the one that makes a
+						// helmet and a plank of the same size sink differently.
+						if (mesh.local.halfThin > 0.0f) {
+							bulk = std::clamp(
+								(mesh.local.halfThin * meshToWorld) /
+									std::max(stamp.radius, 1.0f),
+								0.0f, 1.0f);
+						}
+
+						// The same thickness again, kept in world units for
+						// the depth ceiling below.  The line above divides it
+						// by the mark's half length to make a fraction; this
+						// keeps the measurement itself, because a ceiling on
+						// how far the snow may sink has to be compared against
+						// a distance and not against a ratio.
+						halfThinWorld = mesh.local.halfThin * meshToWorld;
+					}
 
 					const float ordinary = Settings::stampDepth * Settings::objectStampDepthScale *
 						bulk * response.depthScale * Weather::DepthScale();
 
 					stamp.depth = Surfaces::MarkDepth(surface, ordinary, bulk, stamp.x, stamp.y);
-					stamp.rim = Surfaces::RimHeight(ordinary, response.rimScale);
+
+					// Two rules, and the deeper of them decides.
+					//
+					// A mark deeper than the object that made it cannot be
+					// seen, so it is capped at a multiple of the object's own
+					// half thickness - but that cap is about an object standing
+					// in its own dent, and an object under the blanket is not in
+					// its dent at all.  `MarkCeiling` takes the deeper of the
+					// two answers, and `MarkDepthFor` also lifts a mark that
+					// came out shallower than the snow it has to get through:
+					// the mark has to reach the object, or the object stays
+					// invisible however right the rest of the line looks.
+					//
+					// The rules live in MeshShape.h so they can be asserted
+					// directly; see MarkCeiling for the measurements behind them.
+					const float beforeCut = stamp.depth;
+					stamp.depth = MeshShape::MarkDepthFor(stamp.depth, halfThinWorld,
+						Settings::objectStampMaxDepthPerThickness, snowOver);
+					// Only reported when the ceiling is what cut the mark down,
+					// so a run where every mark happened to be small enough does
+					// not read as one where the ceiling was busy.  The reach
+					// wording in `LogObject` takes precedence over this one.
+					if (stamp.depth < beforeCut) {
+						depthCeiling = MeshShape::MarkCeiling(halfThinWorld,
+							Settings::objectStampMaxDepthPerThickness, snowOver);
+					}
+
+					// The hole has to be wide enough to uncover the object, not
+					// only deep enough to reach it.
+					//
+					// The depth above is right - a mark that deep ends level
+					// with the object's own underside - but the shader spends
+					// the mark's disc on its falloff, and bare snow carries
+					// shoulder = 0.0, so the sink falls away from the first
+					// unit out.  A helmet marked radius = 10.1 into 23.4 units
+					// of snow, at 9.8 half width, had 0.2 units of snow moved
+					// at its own edge and showed through a circle about four
+					// units across.
+					//
+					// Widening the mark does not move it, darken it or deepen
+					// it: the floor is set under the object's whole footprint
+					// and the object ends up standing in the hole it made.
+					// See BuriedRadius for what the two constants are.
+					if (snowOver > 0.0f) {
+						const float face = std::max(mesh.world.halfLength, shape.radius);
+						const float buried = MeshShape::BuriedRadius(face);
+						if (buried > 0.0f) {
+							stamp.radius = std::clamp(std::max(stamp.radius, buried),
+								Settings::objectStampMinRadius,
+								Settings::objectStampMaxRadius);
+							stamp.shoulder = std::max(
+								stamp.shoulder, MeshShape::BuriedShoulder());
+						}
+					}
+
+					if (Settings::objectStampMaxDepthPerThickness > 0.0f &&
+						halfThinWorld > 0.0f) {
+						// The rim is scaled from the depth it belongs to, so
+						// it is taken down with it - a rim built for a hole
+						// three times this size would stand as a wall around
+						// an object that is barely in the snow.
+						stamp.rim = Surfaces::RimHeight(
+							MeshShape::CapDepthByThickness(ordinary, halfThinWorld,
+								Settings::objectStampMaxDepthPerThickness),
+							response.rimScale);
+					} else {
+						stamp.rim = Surfaces::RimHeight(ordinary, response.rimScale);
+					}
 				}
 
 				if (i == 0) {
-					LogObject(a_ref, surface, stamp, drop);
+					LogObject(a_ref, surface, stamp, drop, depthCeiling, snowOver);
 				}
 				a_out.push_back(stamp);
 
@@ -1055,6 +2061,9 @@ namespace ObjectStamps
 		g_candidates.clear();
 		g_motion.clear();
 		g_reported.clear();
+		g_reachReported.clear();
+		g_buriedAt = 0;
+		g_buriedLines = 0;
 		g_contactLines = 0;
 		g_heldLines = 0;
 		g_contacts = {};

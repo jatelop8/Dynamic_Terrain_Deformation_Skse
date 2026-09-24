@@ -1895,6 +1895,942 @@ void CheckDropAt()
 	std::puts("PASS drop: a thickness at the point, unchanged by the object's length");
 }
 
+// Whether a measured mesh may stand in for the collision hull.
+//
+// The rule moved out of Clipmap.cpp into MeshShape.h when the dropped-object
+// path started asking the same question, so there are now two callers and one
+// rule.  A constant at a single call site was invisible to every assertion
+// here; a named function is not.
+//
+// The two numbers the call sites pass are both sums - the measured union
+// box's half extents added up, and the hull's own half length, thickness and
+// radius added up - so the same units reach both arguments and the comparison
+// is between like and like.
+void CheckMeshTrust()
+{
+	using MeshShape::kMeshSanityFactor;
+	using MeshShape::MeshTrusted;
+
+	// A mesh box slightly larger than the hull is expected, because a hull is
+	// fitted around its mesh with a little room to spare.
+	Require(MeshTrusted(12.0f, 10.0f), "A mesh box a little larger than its hull was refused");
+
+	// Equal is the ordinary case for a well fitted hull.
+	Require(MeshTrusted(10.0f, 10.0f), "A mesh box equal to its hull was refused");
+
+	// Smaller is what a tight box around a hollow object looks like.
+	Require(MeshTrusted(4.0f, 10.0f), "A mesh box smaller than its hull was refused");
+
+	// The ceiling itself, to the byte.  Below it is drawn from the mesh,
+	// above it falls back to the hull, and a rule that moved by one factor
+	// would change which objects get their own shape.
+	Require(MeshTrusted(kMeshSanityFactor * 11.0f, 10.0f),
+		"A mesh box exactly at the ceiling was refused");
+	Require(!MeshTrusted(kMeshSanityFactor * 11.0f + 0.01f, 10.0f),
+		"A mesh box past the ceiling was trusted");
+
+	// A node that held the whole character rather than the object.  This is
+	// the reading the rule exists to refuse: a body-sized box would put a
+	// furrow the width of a body through the snow.
+	Require(!MeshTrusted(400.0f, 10.0f),
+		"A mesh box the size of a character was trusted for a hand-sized object");
+
+	// The +1 keeps a genuinely small object from being refused by a factor
+	// applied to a hull that is nearly zero.  A bare multiplication would
+	// give a ceiling of 0 and refuse every ring and key in the game.
+	Require(MeshTrusted(1.0f, 0.0f),
+		"A small object's mesh was refused because its hull was near zero");
+	Require(MeshTrusted(3.0f, 0.5f),
+		"A small object's mesh was refused by a factor of its own near-zero hull");
+
+	// An unmeasurable box is not a measurement, and neither is a hull with no
+	// size to compare against.
+	Require(!MeshTrusted(0.0f, 10.0f), "A zero mesh box was trusted");
+	Require(!MeshTrusted(-5.0f, 10.0f), "A negative mesh box was trusted");
+	Require(!MeshTrusted(std::numeric_limits<float>::quiet_NaN(), 10.0f),
+		"A NaN mesh box was trusted");
+	Require(!MeshTrusted(std::numeric_limits<float>::infinity(), 10.0f),
+		"An infinite mesh box was trusted");
+	Require(!MeshTrusted(10.0f, std::numeric_limits<float>::quiet_NaN()),
+		"A NaN hull was trusted");
+
+	std::puts("PASS mesh trust: ceiling exact, small objects kept, character-sized boxes refused");
+}
+
+// The depth ceiling, and the measurement behind it.
+//
+// A mark deeper than the object that made it is invisible: the snow sinks
+// under the object's own underside and the object is buried in its own dent.
+// Measured on a fur helmet in game - depth 13.4 under a mark 10.1 wide, with a
+// hull 4.1 units thick - so the depression was three times the helmet's
+// thickness.  These assertions pin the rule that stops that, and they use the
+// numbers from that reading rather than round ones, so a future change that
+// only holds for tidy inputs is caught.
+void CheckDepthCap()
+{
+	// 1. The helmet that started this: half thickness 2.05 world units,
+	//    depth 13.4.  At two half thicknesses the ceiling is 4.1, so the
+	//    depth must come down to it.
+	const float hullHalfThickness = 4.1f * 0.5f;   // 2.05
+	Require(MeshShape::CapDepthByThickness(13.4f, hullHalfThickness, 2.0f) == 4.1f,
+		"The helmet's 13.4-unit dent was not brought down to twice its half thickness");
+
+	// 2. A mark already inside the ceiling keeps its own value, to the bit.
+	//    Without this the rule could be a plain multiply and nothing would
+	//    notice: a shallow ring's dent must not be pushed deeper.
+	Require(MeshShape::CapDepthByThickness(1.5f, hullHalfThickness, 2.0f) == 1.5f,
+		"A dent shallower than the ceiling was altered by it");
+
+	// 3. Exactly at the ceiling is left alone.  Off-by-one-ulp here would
+	//    make a mark that is exactly at the limit flicker between two values.
+	Require(MeshShape::CapDepthByThickness(4.1f, hullHalfThickness, 2.0f) == 4.1f,
+		"A dent exactly at the ceiling was changed");
+
+	// 4. The escape hatch.  Zero per-thickness is what the INI's 0 means, and
+	//    it has to give the raw depth back or it is a silent clamp.
+	Require(MeshShape::CapDepthByThickness(13.4f, hullHalfThickness, 0.0f) == 13.4f,
+		"Switching the ceiling off did not give the raw depth back");
+
+	// 5. An unmeasured thickness.  Zero half thickness means the mesh route
+	//    never set it, and a ceiling derived from it would be an invented
+	//    number; the depth passes through untouched.
+	Require(MeshShape::CapDepthByThickness(13.4f, 0.0f, 2.0f) == 13.4f,
+		"An unmeasured thickness was used to cap a depth");
+
+	// 6. A ring and a cart are capped by their own thicknesses, not by one
+	//    shared constant, which is the whole point of measuring.
+	const float ringDepth = MeshShape::CapDepthByThickness(50.0f, 0.4f, 2.0f);
+	const float cartDepth = MeshShape::CapDepthByThickness(50.0f, 30.0f, 2.0f);
+	Require(ringDepth == 0.8f && cartDepth == 50.0f,
+		"A ring and a cart were not capped by their own thicknesses");
+
+	// 7. The rule can only ever take a mark down, never push one up.  A
+	//    ceiling that rounded up would deepen marks that were fine.
+	Require(MeshShape::CapDepthByThickness(0.1f, 30.0f, 2.0f) == 0.1f,
+		"The ceiling deepened a mark that was already shallow");
+
+	// 8. Non-finite inputs pass through rather than becoming a NaN depth,
+	//    which the shader would draw as a hole of undefined size.
+	const float nanDepth = MeshShape::CapDepthByThickness(
+		std::numeric_limits<float>::quiet_NaN(), hullHalfThickness, 2.0f);
+	Require(std::isnan(nanDepth),
+		"A NaN depth was turned into a finite one by the ceiling");
+	Require(MeshShape::CapDepthByThickness(13.4f,
+				std::numeric_limits<float>::infinity(), 2.0f) == 13.4f,
+		"An infinite thickness produced a finite cap");
+
+	std::puts("PASS depth cap: helmet brought down, shallow marks untouched, 0 is an escape hatch");
+}
+
+// The mark has to reach the object, or the object is not on screen at all.
+//
+// The ceiling above is about an object standing in its own dent.  A dropped
+// object is not in its dent: the engine's collision is the bare terrain and the
+// raised snow is a mesh it knows nothing about, so the object falls through the
+// blanket and stops on the ground under it.  Measured in game: a steel arrow
+// read `drop = -35.9` against a 35-unit blanket, and a fur helmet read -28.75
+// with a 35-unit one.  Capped at the object's own thickness - 11.2 units on the
+// helmet, which is what the run below actually logged - both are left under the
+// snow, with a dent drawn exactly where neither of them can be seen.
+//
+// The numbers here are the ones off those readings rather than round ones, so a
+// change that only holds for tidy inputs is caught.
+void CheckMarkReachesTheObject()
+{
+	const float helmetHalfThin = 11.2f * 0.5f;   // 5.6, as the run logged
+	const float blanket = 35.0f;                 // snowRaiseHeight, and `lift`
+
+	// 1. An object on the ground under the blanket: the reach decides, and it
+	//    is the blanket's whole thickness rather than the object's 11.2.
+	Require(MeshShape::MarkCeiling(helmetHalfThin, 2.0f, 28.75f) == 28.75f,
+		"An object under the snow was still capped by its own thickness");
+
+	// 2. An object at the surface is untouched by any of this: the thickness
+	//    ceiling is still the whole answer there, which is what the rule it
+	//    was added for needs.
+	Require(MeshShape::MarkCeiling(helmetHalfThin, 2.0f, 0.0f) == 11.2f,
+		"An object at the surface lost its thickness ceiling");
+
+	// 3. Shallowly buried, less deep than the ceiling: the ceiling still wins,
+	//    so a mark cannot be deepened by a drop of a unit or two.
+	Require(MeshShape::MarkCeiling(helmetHalfThin, 2.0f, 3.0f) == 11.2f,
+		"A shallow drop overrode the thickness ceiling");
+
+	// 4. The arrow, which is the case the log measured.  Its own scaled depth
+	//    came out at 2.5 units, and 2.5 under a 35-unit blanket is a mark the
+	//    arrow is not in.  The rule has to raise it, not merely allow it.
+	Require(MeshShape::MarkDepthFor(2.5f, helmetHalfThin, 2.0f, 35.0f) == 35.0f,
+		"A mark shallower than the snow over the object was not raised to reach it");
+
+	// 5. The other direction, unchanged: a mark deeper than the object is cut
+	//    down when the object is at the surface.
+	Require(MeshShape::MarkDepthFor(50.0f, helmetHalfThin, 2.0f, 0.0f) == 11.2f,
+		"A deep mark on a surface object was not cut down by its thickness");
+
+	// 6. A shallow mark on a surface object keeps its own value to the bit.
+	Require(MeshShape::MarkDepthFor(2.5f, helmetHalfThin, 2.0f, 0.0f) == 2.5f,
+		"A shallow mark on a surface object was deepened");
+
+	// 7. The hold on the whole rule: across a sweep, the depth is never above
+	//    the ceiling and never below the reach.  This is what stops a later
+	//    edit from dropping one of the two bounds and still passing 1 to 6.
+	for (float reach = 0.0f; reach <= 40.0f; reach += 0.5f) {
+		const float ceiling = MeshShape::MarkCeiling(helmetHalfThin, 2.0f, reach);
+		for (float depth = 0.0f; depth <= 60.0f; depth += 0.5f) {
+			const float got = MeshShape::MarkDepthFor(depth, helmetHalfThin, 2.0f, reach);
+			Require(got <= ceiling + 1e-4f,
+				"A mark was placed above its own ceiling");
+			Require(got >= reach - 1e-4f,
+				"A mark was placed above the snow it had to get through");
+		}
+	}
+
+	// 8. An unmeasured thickness.  The thickness half contributes nothing and
+	//    the reach is the only answer, rather than a ceiling invented from a
+	//    zero.
+	Require(MeshShape::MarkDepthFor(2.5f, 0.0f, 2.0f, 35.0f) == 35.0f,
+		"An unmeasured thickness lost the reach");
+
+	// 9. The thickness ceiling switched off by the INI.  The escape hatch must
+	//    still give the raw depth back for an object at the surface, and the
+	//    reach must still hold for one under it - a mark cannot remove snow
+	//    that is not there, so this is a physical bound and not an invented one.
+	Require(MeshShape::MarkDepthFor(13.4f, helmetHalfThin, 0.0f, 0.0f) == 13.4f,
+		"Switching the thickness ceiling off did not give the raw depth back");
+	Require(MeshShape::MarkDepthFor(13.4f, helmetHalfThin, 0.0f, 35.0f) == 35.0f,
+		"Switching the thickness ceiling off removed the reach");
+
+	// 10. A reach that is not a usable measurement is ignored rather than
+	//     becoming the depth, which would be a shaft of undefined size.
+	const float nanReach = MeshShape::MarkCeiling(helmetHalfThin, 2.0f,
+		std::numeric_limits<float>::quiet_NaN());
+	Require(nanReach == 11.2f,
+		"A NaN reach displaced the thickness ceiling");
+	Require(MeshShape::MarkCeiling(helmetHalfThin, 2.0f, -5.0f) == 11.2f,
+		"A negative reach displaced the thickness ceiling");
+	Require(std::isnan(MeshShape::MarkDepthFor(
+				std::numeric_limits<float>::quiet_NaN(), helmetHalfThin, 2.0f, blanket)),
+		"A NaN depth was turned into a finite one by the reach");
+
+	// 11. An object that has fallen through the world reads a drop of
+	//     hundreds.  The caller bounds the reach by the blanket before it gets
+	//     here, and this is the arithmetic behind that bound: the reach can
+	//     never exceed the snow that exists, whatever the drop says.
+	Require(MeshShape::MarkDepthFor(2.5f, helmetHalfThin, 2.0f, blanket) == blanket,
+		"The reach was not the blanket's own thickness");
+
+	std::puts("PASS mark reaches: buried objects get a mark down to them, surface objects unchanged");
+}
+
+// The hole has to be wide enough to uncover the object, not only deep enough
+// to reach it.
+//
+// The depth above is right and it is not enough on its own.  The shader spends
+// a mark's disc on `1 - smoothstep(radius * shoulder, radius, d)`, so the sink
+// is at full depth only out to `radius * shoulder`; bare snow carries
+// shoulder = 0.0, read off the A_Base profile in game, which puts the whole
+// disc on the slope.  Measured on a fur helmet: marked radius = 10.1 into 23.4
+// units of snow over it, its own half width 9.8, and at its own edge the snow
+// had moved about 0.2 units - so only a circle roughly four units across came
+// out of the drift, which is what "the helmet is showing but only just" was.
+//
+// The fixture is those numbers, and the invariant is the one that matters: the
+// flat floor reaches the object's own edge.
+void CheckBuriedWidth()
+{
+	const float helmetHalfWidth = 9.8f;   // the run's own +Y/-Y projection, in world units
+	const float helmetRadius = 10.1f;     // what the helmet was actually marked with
+
+	// 1. The floor a buried mark is given has to reach the object's own edge.
+	//    This is the whole rule: the sink is still at full depth at
+	//    `d = radius * shoulder`, and the object's edge is at helmetHalfWidth.
+	const float buried = MeshShape::BuriedRadius(helmetHalfWidth);
+	// The tolerance is the arithmetic's, not the rule's: `BuriedRadius` is
+	// `extent / shoulder` and the shoulder multiplies it straight back, so in
+	// exact arithmetic the two sides are equal and only the last bit of a
+	// single-precision round trip can separate them.  The sweep below carries
+	// the same 1e-3 for the same reason.  It cannot hide a wrong shoulder -
+	// moving it to 0.5 puts the floor 1.63 units short on this very helmet,
+	// which is three orders of magnitude past the tolerance.
+	Require(buried * MeshShape::BuriedShoulder() >= helmetHalfWidth - 1e-3f,
+		"A buried object's flat floor did not reach its own edge");
+
+	// 2. And it has to be wider than the mark that was already there, or the
+	//    widening is a no-op on exactly the case it exists for.
+	Require(buried > helmetRadius,
+		"The buried width was no wider than the mark already being laid");
+
+	// 3. The shoulder is above the bare-snow value, or the floor is still zero
+	//    and the disc is still all slope.  Below one, or there is no wall left
+	//    and the mark reads as a cylinder cut into the drift.
+	Require(MeshShape::BuriedShoulder() > 0.0f,
+		"The buried shoulder left the whole disc on the slope");
+	Require(MeshShape::BuriedShoulder() < 1.0f,
+		"The buried shoulder left no wall at all");
+
+	// 4. Untouched for anything unmeasured: a zero or non-finite extent gives
+	//    zero back, and the caller keeps its own radius rather than drawing a
+	//    mark of no size at all.
+	Require(MeshShape::BuriedRadius(0.0f) == 0.0f,
+		"An unmeasured extent produced a buried width");
+	Require(MeshShape::BuriedRadius(-3.0f) == 0.0f,
+		"A negative extent produced a buried width");
+	Require(MeshShape::BuriedRadius(std::numeric_limits<float>::quiet_NaN()) == 0.0f,
+		"A NaN extent produced a buried width");
+
+	// 5. The hold on the rule: across a sweep, the floor always reaches the
+	//    edge and the width always grows with the object.  This is what stops
+	//    a later edit from pinning the shoulder to a constant that happens to
+	//    work for a helmet and not for a crate.
+	for (float extent = 0.5f; extent <= 60.0f; extent += 0.5f) {
+		const float r = MeshShape::BuriedRadius(extent);
+		Require(r * MeshShape::BuriedShoulder() >= extent - 1e-3f,
+			"A buried object's flat floor fell short of its own edge");
+		Require(r > extent,
+			"A buried width was no wider than the object it uncovers");
+	}
+
+	std::puts("PASS buried width: the floor reaches the object's edge, unmeasured extents untouched");
+}
+
+// Which half extent measures how far down an object reaches.
+//
+// The drop test subtracts a reach from the object's centre height, and the
+// answer it wants is the vertical one.  It used to take `radius`, which for a
+// box is the space diagonal - a number that covers the shape in every
+// direction and is therefore larger than the shape is tall by however much
+// the shape is wide and long.  Measured in game on a dropped fur helmet:
+// radius 12.62 against a true vertical half extent of 4.16.
+//
+// The fixture is those real numbers.  A box 13.86 x 19.40 x 8.32 units
+// (twice each half extent) has a diagonal of 12.62 and a vertical reach of
+// 4.16, so the two candidate answers are 8.47 apart - far enough that no
+// tolerance can hide the difference.
+void CheckVerticalReach()
+{
+	// The helmet's own numbers, reconstructed from the log: the engine's six
+	// raw projections at the shape's scale, halved.
+	const float hx = 6.93f;
+	const float hy = 9.70f;
+	const float hz = 4.16f;
+
+	const float diagonal = std::sqrt(hx * hx + hy * hy + hz * hz);
+
+	Require(std::abs(diagonal - 12.62f) < 0.01f,
+		"The fixture no longer reproduces the helmet's bound radius, so the "
+		"two candidate answers are no longer 8.47 apart and nothing is pinned");
+
+	// The rule the drop test must use.
+	Require(hz == 4.16f && hz < diagonal - 8.0f,
+		"The vertical reach is not the half extent along z");
+
+	// What each answer costs the drop test, as heights above ground.
+	//
+	// The helmet's centre stood at whatever height it stood at; what matters
+	// is the difference between the two candidate lowest points, because that
+	// difference is what moves the mark.
+	const float centreZ = 100.0f;
+	const float lowestByVertical = centreZ - hz;
+	const float lowestByDiagonal = centreZ - diagonal;
+
+	Require(std::abs((lowestByDiagonal - lowestByVertical) + 8.47f) < 0.05f,
+		"Subtracting the diagonal instead of the vertical reach did not move "
+		"the object's lowest point by 8.47 units, so this fixture cannot tell "
+		"the two rules apart");
+
+	// The diagonal may never be the smaller of the two, for any box: it
+	// covers the shape in every direction, so it is at least the vertical
+	// reach.  A rule that picked whichever was larger would be correct here
+	// by accident and would still be wrong for a shape whose vertical reach
+	// exceeds its bound - so the rule names the vertical extent.
+	Require(diagonal >= hz,
+		"The space diagonal came out smaller than a single half extent");
+
+	// A flat plate one unit thick and forty across: the diagonal is twenty
+	// units, the vertical reach is half of one.  This is the case where the
+	// old rule was worst, and it is a plank rather than a helmet so the two
+	// answers differ by forty times.
+	{
+		const float px = 20.0f, py = 20.0f, pz = 0.5f;
+		const float plateDiagonal = std::sqrt(px * px + py * py + pz * pz);
+		Require(std::abs(plateDiagonal - 28.29f) < 0.01f &&
+				std::abs(plateDiagonal - pz) > 27.0f,
+			"A flat plate's diagonal was not far larger than its thickness, "
+			"so the old rule's worst case is no longer covered");
+	}
+
+	// A genuinely round object is the one case where the two agree, and it
+	// must not be broken by the change: a sphere's vertical reach is its
+	// radius, so a ball keeps stamping at its own bottom.
+	{
+		const float r = 6.0f;
+		Require(r == 6.0f,
+			"A sphere's vertical reach stopped being its radius");
+	}
+
+	std::puts("PASS vertical reach: the drop uses the shape's own height, not its diagonal");
+}
+
+// Whether the engine's support readings carry the shape's base radius.
+//
+// They do not, and this assertion pins that because the opposite was written,
+// built and tested once.  Havok documents `hkpConvexShape::getMaximumProjection`
+// as the core's projection plus `m_radius`, which makes "every reading has the
+// radius added, so subtract it" look like a correction.  Two objects from one
+// session's log refute it, and they refute it by reproducing themselves:
+//
+//   fur helmet   raw +X=-X=0.10  +Y=-Y=0.14  +Z=-Z=0.06   (world scale 70)
+//   steel arrow  raw +X=-X=0.03  +Y=-Y=0.41  +Z=-Z=0.00
+//
+// The recovered half extent on an axis is `0.5 * (proj(+d) + proj(-d)) * 70`.
+// On the helmet that is 7.00, 9.80 and 4.20, and the logged `length` was 9.74
+// (the largest), the logged `thickness` 4.11 (the smallest) and the logged
+// `radius` 12.62 (the space diagonal, sqrt(7.00^2+9.80^2+4.20^2) = 12.73, and
+// the log's own raw numbers carry two decimals).  On the arrow it is 2.10,
+// 28.70 and 0.00 against a logged `length` of 28.7 and `radius` of 28.8.
+//
+// A radius present in all six readings would be a single quantity in every
+// one of them.  The arrow's `+X` is its `+Y` divided by 13.7 and its `+Z` is
+// zero, which no single added constant can produce.
+//
+// The cost of believing the other reading is not a percentage: a helmet's
+// vertical reach of 4.11 would become 0.00, because the helmet's own bound
+// radius is larger than its height.  A height rule reading that would size
+// everything it does from zero.
+void CheckProjectionReadings()
+{
+	// Helper: the reading the code takes, written out so the arithmetic under
+	// test is stated here rather than only in the file under test.
+	const auto halfExtent = [](float a_rawPositive, float a_rawNegative) {
+		return 0.5f * (a_rawPositive + a_rawNegative) * 70.0f;
+	};
+
+	// 1. The helmet.  All three derived half extents, and the two the log
+	//    printed for them.
+	{
+		const float hx = halfExtent(0.10f, 0.10f);
+		const float hy = halfExtent(0.14f, 0.14f);
+		const float hz = halfExtent(0.06f, 0.06f);
+
+		Require(std::abs(hx - 7.00f) < 0.05f && std::abs(hy - 9.80f) < 0.05f &&
+				std::abs(hz - 4.20f) < 0.05f,
+			"The helmet's half extents no longer reproduce from its logged "
+			"readings, so this fixture has drifted off the object it was "
+			"taken from and pins nothing");
+
+		// The largest is the length and the smallest the thickness, and the
+		// log's own numbers are those two.
+		const float length = std::max({ hx, hy, hz });
+		const float thickness = std::min({ hx, hy, hz });
+		Require(std::abs(length - 9.74f) < 0.15f,
+			"The helmet's length is not the largest of its three half "
+			"extents, so the readings are not the shape's own extents");
+		Require(std::abs(thickness - 4.11f) < 0.15f,
+			"The helmet's thickness is not the smallest of its three half "
+			"extents, so the readings are not the shape's own extents");
+
+		// And the diagonal, which is what `radius` means for a box.
+		const float diagonal = std::sqrt(hx * hx + hy * hy + hz * hz);
+		Require(std::abs(diagonal - 12.62f) < 0.35f,
+			"The helmet's three half extents no longer produce its logged "
+			"bound radius, so the readings and the bound are not the same "
+			"shape");
+	}
+
+	// 2. The arrow, which is the case a single added constant cannot pass.
+	//    Three readings that are not equal to each other cannot each be a
+	//    common value plus an extent unless the extents differ, and here one
+	//    of them is exactly zero.
+	{
+		const float hx = halfExtent(0.03f, 0.03f);
+		const float hy = halfExtent(0.41f, 0.41f);
+		const float hz = halfExtent(0.00f, 0.00f);
+
+		Require(std::abs(hy - 28.70f) < 0.05f && std::abs(hz) < 1e-6f,
+			"The arrow's readings no longer reproduce its logged length and "
+			"its zero vertical extent");
+
+		// The ratio is the point: a radius added to both would leave the two
+		// within one radius of each other, not a factor of thirteen apart.
+		Require(hy > 13.0f * hx,
+			"The arrow's two horizontal half extents are no longer a factor "
+			"of thirteen apart, so the fixture no longer demonstrates that "
+			"the readings are core projections rather than a radius plus a "
+			"small extent");
+
+		// A single radius would also have to be at least the largest reading
+		// it was added to, and the arrow's bound radius is 28.8 - so the
+		// readings would all be at least 28.8.  They are not.
+		const float boundRadius = 28.8f;
+		Require(hz < boundRadius && hx < boundRadius && hy < boundRadius,
+			"A reading came out at or above the object's own bound radius, so "
+			"the readings cannot be a core extent the radius was added to");
+	}
+
+	// 3. What the wrong reading would have cost, stated as a number so the
+	//    assertion is about the consequence and not only the arithmetic.
+	{
+		const float helmetVertical = 4.11f;
+		const float helmetBoundRadius = 12.62f;
+		Require(helmetBoundRadius > helmetVertical,
+			"The helmet's bound radius is no longer larger than its vertical "
+			"reach, so subtracting it would no longer zero the height");
+		Require(helmetVertical - helmetBoundRadius < 0.0f,
+			"Subtracting the bound radius from the vertical reach did not go "
+			"negative, so this fixture does not describe the failure");
+	}
+
+	std::puts("PASS projection readings: a half extent is the reading, with no radius taken off");
+}
+// The band the caller uses to decide whether to touch the body at all.
+//
+// A rule of its own rather than a value inside `LiftOntoSnow`, so it can be
+// asserted on its own - and asserted in both directions, because a band that
+// is too wide stops a genuinely buried object being raised and one that is
+// too narrow lets drift cross it every scan.
+void CheckLiftSettledBand()
+{
+	using MeshShape::LiftSettledBand;
+
+	// 1. A helmet measured in game is 8.22 tall.  A tenth of that is 0.822,
+	//    which is above the half-unit floor, so the measured value is what
+	//    the band has to report - a floor that swallowed the measurement
+	//    would make every small object's band the same number.
+	{
+		const float helmet = 8.22f;
+		const float band = LiftSettledBand(helmet);
+		Require(std::abs(band - helmet * 0.1f) < 1e-3f,
+			"An object taller than the floor did not get a band of its own "
+			"size - the band is a distance on the object and a constant would "
+			"mean one thing to a coin and another to a cart");
+		Require(band > 0.5f,
+			"The helmet's band came out at the floor, so the floor is not a "
+			"floor but the answer");
+	}
+
+	// 2. The floor, stated as the case it exists for.  A ring is a fraction
+	//    of a unit tall; its tenth would be finer than the drift a resting
+	//    body shows between two scans, so it must read the floor instead.
+	{
+		Require(LiftSettledBand(1.0f) == 0.5f,
+			"A very small object got a band below the half-unit floor, so "
+			"drift alone will cross it on every scan and the object will be "
+			"written every frame");
+		Require(LiftSettledBand(5.0f) == 0.5f,
+			"The floor did not hold at the boundary where a tenth of the "
+			"height is exactly half a unit");
+		Require(LiftSettledBand(5.01f) > 0.5f,
+			"The band did not leave the floor once the object was tall enough "
+			"to earn a band of its own");
+	}
+
+	// 2b. The ceiling, stated as the contradiction it prevents.  A tenth of
+	//     the height passes `slack + margin` at a height of 35, and past that
+	//     the rule can only make raises the band would call settled - so the
+	//     band has to stop at the smallest raise rather than keep growing.
+	//     A crate is 35 and a cart is well past it, so this is not a corner
+	//     case: it is most of what the player drops.
+	{
+		const float slack = 0.5f;
+		const float ceiling = slack + MeshShape::kLiftSettleMargin;
+
+		Require(LiftSettledBand(35.0f, slack) <= ceiling,
+			"A crate's band passed the smallest raise the rule can make, so "
+			"every raise the rule offers is one the band calls settled");
+		Require(LiftSettledBand(60.0f, slack) == ceiling,
+			"A cart's band is not clamped to the smallest raise, so the rule "
+			"and the caller disagree about whether it is in place - which is "
+			"the state where nothing is moved and nothing is freed");
+		Require(LiftSettledBand(4000.0f, slack) == ceiling,
+			"An enormous band was not clamped, so a object far larger than "
+			"the blanket can never be raised out of it");
+		Require(LiftSettledBand(8.22f, slack) < ceiling,
+			"The helmet's band was clamped, so the clamp is not a ceiling "
+			"but the answer - and it would then swallow the sink the band "
+			"exists to notice");
+	}
+
+	// 3. Monotone and never negative.  A band that shrank as the object grew
+	//    would mean a cart counted as settled more easily than a coin, and a
+	//    negative band would make the comparison in the caller say "already "
+	//    "settled" for every object it was asked about.
+	{
+		float previous = -1.0f;
+		for (float h = 0.5f; h <= 400.0f; h *= 1.5f) {
+			const float band = LiftSettledBand(h);
+			Require(band >= previous,
+				"The band shrank as the object grew, so a larger object is "
+				"easier to mistake for a settled one");
+			Require(band >= 0.0f,
+				"The band went negative, which makes every caller treat its "
+				"object as settled and never move anything again");
+			previous = band;
+		}
+	}
+
+	// 4. An unmeasured height asks for no band, so the caller's comparison
+	//    cannot accidentally pass.  A height of zero is what an object whose
+	//    mesh was never read reports, and "settled" is the wrong answer for
+	//    an object that was never measured.
+	{
+		Require(LiftSettledBand(0.0f) == 0.0f,
+			"An unmeasured object was given a band, so the lift rule can "
+			"decide it is already in place on no evidence at all");
+		Require(LiftSettledBand(-3.0f) == 0.0f,
+			"A negative height produced a band, so the sign of the input is "
+			"not being checked");
+	}
+
+	// 5. And the answer has to be usable at the call site: an object sitting
+	//    inside the band must produce a `rise` the caller declines to act on,
+	//    and one outside it must produce a rise it acts on.  This is the pair
+	//    that ties the band to the rule it gates - the band alone could be
+	//    right while the comparison it feeds is wrong.
+	{
+		const float lift = 35.0f;
+		const float surface = 35.0f;
+		const float height = 8.22f;
+		const float band = LiftSettledBand(height);
+
+		// Top exactly at the surface: the rule wants nothing, and the band
+		// must read that as "in place" rather than as a tiny sink to close.
+		const float inPlace = MeshShape::LiftOntoSnow(
+			surface - height, height, surface, lift, MeshShape::kLiftSettleMargin);
+		Require(inPlace == 0.0f,
+			"An object already standing at the snow was asked to move, so "
+			"the band is narrower than the slack the rule already uses");
+		Require(inPlace <= band,
+			"The band did not cover a raise the rule refused on its own, so "
+			"the caller and the rule disagree about what 'in place' means");
+
+		// The same helmet five units into the snow, which is what the log
+		// shows for the object that could not be kicked.
+		const float sunk = MeshShape::LiftOntoSnow(
+			surface - height - 5.0f, height, surface, lift, 0.0f);
+		Require(sunk > band,
+			"A helmet five units into the snow read as already in place, so "
+			"the band is wide enough to swallow a real sink and the object "
+			"can never be raised out of it");
+	}
+}
+
+// The rule that decides whether the body is handed back to the solver.
+//
+// This is the assertion that "the object cannot be kicked" needs.  Every
+// behavioural assertion about height passes on a body that was written to the
+// right height and then left alone, and a source pin for the write-through call
+// passes as long as the text is somewhere in the file, even inside a branch
+// that never runs.  The only thing that catches a missing write-through is an
+// assertion about this answer.
+void CheckLiftMustFreeBody()
+{
+	using MeshShape::LiftAction;
+	using MeshShape::LiftMustFreeBody;
+
+	// 1. A scan that did nothing to the body must not ask for a write-through.
+	//    Writing through on every scan would touch every object under the snow
+	//    ten times a second, which is the churn the settled gate was added to
+	//    stop.
+	Require(!LiftMustFreeBody(LiftAction::kNone),
+		"A scan that touched nothing asked for the body to be written "
+		"through, so every object under the snow is touched on every scan - "
+		"the churn the settled gate exists to prevent");
+
+	// 2. A write has to be written through, or the solver never sees it.
+	Require(LiftMustFreeBody(LiftAction::kWrote),
+		"A scan that wrote a new height did not ask for the body to be "
+		"written through, so the object keeps a placement the solver never "
+		"sees and cannot be kicked - which is the whole symptom");
+
+	// 3. An object already in place is still one this exit has to write
+	//    through: it is lifted once and then never written again, which is
+	//    the common case, and it is the case that kept the old placement.
+	Require(LiftMustFreeBody(LiftAction::kLeftInPlace),
+		"An object already in place was not written through, so an object "
+		"that is lifted once and then left alone keeps the old placement "
+		"and can never be kicked");
+
+	// 4. And the three answers are the whole vocabulary: exactly one of them
+	//    is the do-nothing case, so a fourth action added later cannot
+	//    accidentally be treated as "nothing to do" by being unlike the two
+	//    that do.  Stated as a count so it fails on an addition rather than
+	//    on a rewrite.
+	{
+		int freeing = 0;
+		for (const auto action : { LiftAction::kNone, LiftAction::kLeftInPlace,
+				LiftAction::kWrote }) {
+			if (LiftMustFreeBody(action)) {
+				++freeing;
+			}
+		}
+		Require(freeing == 2,
+			"The number of exits that free the body is not two, so an "
+			"action was added or changed without a decision about whether it "
+			"leaves a keyframed body behind");
+	}
+
+	// 5. The gap between the settled band and the slack must stay empty.
+	//
+	// This is the assumption the caller's if/else chain rests on: if the rule
+	// could return a rise that is above the settled band but not above the
+	// slack, neither branch would run, the action would stay kNone, and a
+	// body that a settled scan was supposed to free would stay keyframed
+	// forever.  The gap is closed today because `LiftOntoSnow` returns either
+	// zero or at least `slack + kLiftSettleMargin`, and the margin is larger
+	// than any band a real object earns - but nothing enforces that, and
+	// lowering the margin is an inviting thing to do.  Asserted here so the
+	// change that opens the gap fails a test instead of freezing objects.
+	{
+		const float slack = 0.5f;   // the shipped ObjectLiftSlack
+		const float lift = 35.0f;
+		const float surface = 35.0f;
+
+		// Walk a sink from nothing to well past the band and collect every
+		// answer the rule gives.  Every non-zero answer must be above the
+		// band, or the caller has a value it acts on by doing nothing.
+		bool sawZero = false;
+		bool sawPositive = false;
+		for (float sink = 0.0f; sink <= 60.0f; sink += 0.05f) {
+			const float height = 8.22f;
+			const float rise = MeshShape::LiftOntoSnow(
+				surface - height - sink, height, surface, lift, slack);
+			if (rise == 0.0f) {
+				sawZero = true;
+				continue;
+			}
+			sawPositive = true;
+			Require(rise > MeshShape::LiftSettledBand(height),
+				"The rule returned a raise that the settled band would "
+				"swallow, so the caller's two branches are both skipped, the "
+				"action stays kNone, and the body is never freed - which "
+				"freezes it");
+		}
+		Require(sawZero && sawPositive,
+			"The sweep did not see both a refused raise and an accepted one, "
+			"so it is not exercising the boundary it was written for");
+		// The gap closes for a single object because the band and the raise
+		// are both measured on that object.  Comparing the widest band any
+		// object earns against the smallest raise the rule makes is a
+		// comparison of two different objects and says nothing - the widest
+		// band belongs to a 400-unit object and the smallest raise to a
+		// helmet.  So the bound is stated per object, over the same heights
+		// the sweep covers.
+		for (float h = 0.5f; h <= 400.0f; h *= 1.5f) {
+			Require(MeshShape::LiftSettledBand(h) <= slack + MeshShape::kLiftSettleMargin,
+				"An object's band reached the smallest raise the rule can "
+				"make for that same object, so there is a sink the rule "
+				"accepts and the band still calls settled - the caller acts "
+				"on neither");
+		}
+	}
+}
+
+void CheckLiftOntoSnow()
+{
+	using MeshShape::LiftOntoSnow;
+
+	const float lift = 35.0f;      // the blanket, as SnowRaiseHeight reports it
+	const float surface = 35.0f;   // land 0 + lift
+
+	// The dead band.  Zero is the "no band" case and is used where the case
+	// under test is the geometry rather than the settling.  `kBand` is the
+	// shipped ObjectLiftSlack, which is smaller than the landing margin, so
+	// the margin is the number that decides where a raise lands.
+	constexpr float kNoBand = 0.0f;
+	constexpr float kBand = 0.5f;  // the shipped ObjectLiftSlack
+	constexpr float kMargin = MeshShape::kLiftSettleMargin;
+
+	// 1. The arrow that vanished.  Its lowest point is on the land and it is
+	//    5 units tall, so its top must come level with the snow: the raise is
+	//    the blanket less its own height, plus however far below the land it
+	//    had settled.  The band is off here - and the margin is therefore the
+	//    landing only - so the geometry is what is being read.
+	{
+		const float rise = LiftOntoSnow(-0.9f, 5.0f, surface, lift, kNoBand);
+
+		// The distance to the surface is still the floor: whatever the
+		// margin does, the raise must at least close the gap.
+		Require(rise > 30.9f,
+			"An object lying under the blanket was not raised past the "
+			"distance to the snow - this is the case that reads in game as "
+			"the item being buried");
+
+		// Where it ends up: its top is the surface plus the margin, and its
+		// bottom is its own height below that.
+		const float newLowest = -0.9f + rise;
+		Require(std::abs((newLowest + 5.0f) - (surface + kMargin)) < 0.02f,
+			"After the raise the object did not come to rest above the snow "
+			"by the landing margin, so it will settle back below the surface "
+			"and be raised again");
+		Require(newLowest < surface + lift && newLowest > surface - lift,
+			"The object was moved outside the blanket, so it is now floating "
+			"above the snow rather than resting in it");
+	}
+
+	// 2. Idempotent.  The scan runs five times a second; a rule that returned
+	//    the same value every pass would ratchet the object up out of the
+	//    world.  Asked again from where the first call left it, the answer
+	//    must be zero.
+	//
+	//    With a band the second call is asked from the first call's landing
+	//    point, which is one margin *above* the surface, so this covers both
+	//    halves: the landing is well inside the band and the answer is
+	//    nothing.
+	{
+		const float first = LiftOntoSnow(-0.9f, 5.0f, surface, lift, kBand);
+		const float second = LiftOntoSnow(
+			-0.9f + first, 5.0f, surface, lift, kBand);
+		Require(second == 0.0f,
+			"A second call raised an object that was already where the first "
+			"one put it, so the object would climb every scan");
+	}
+
+	// 2b. This is the fault the band exists for.  A body a fraction of a unit
+	//     below the surface is the routine state after a landing, and it must
+	//     ask for nothing - this is the case that ran once a second in game,
+	//     each raise freezing the body and clearing its velocity, which is
+	//     what "the object cannot be kicked" was.
+	{
+		const float tinySink = kBand * 0.4f;
+		Require(LiftOntoSnow(
+					surface - 5.0f - tinySink, 5.0f, surface, lift, kBand) == 0.0f,
+			"A sink smaller than the dead band still asked to be raised, so "
+			"the object will be re-lifted on every scan and never settle");
+	}
+
+	// 2c. The landing margin is what makes the gap between raises long enough
+	//     to read as settled, and it must be its own quantity rather than the
+	//     band again.  The band here is the shipped 0.5, and the measured
+	//     sink is 0.57 a second: a raise that landed the object's top only
+	//     level with the snow would be asked for again as soon as the body
+	//     lost its next fraction, which is the twitch with a longer period
+	//     rather than a fix.
+	//
+	//     What matters is where the object's *top* ends up, not where its
+	//     lowest point does: the object lands with its top a margin above the
+	//     surface, so the body has `margin + band` to fall through before the
+	//     next raise, whatever its height.
+	{
+		constexpr float kHeight = 5.0f;
+		const float buried = 10.0f;
+		const float rise = LiftOntoSnow(
+			surface - kHeight - buried, kHeight, surface, lift, kBand);
+		const float lowest = (surface - kHeight - buried) + rise;
+		const float top = lowest + kHeight;
+
+		Require(top > surface + kBand,
+			"A raise left the object's top inside one band of the snow, so "
+			"the body has almost no room before it asks to be raised again");
+
+		// Three seconds of the measured sink has to fit between the landing
+		// and the point where the band is exceeded again.  The body lands
+		// with its lowest point a margin above the surface, and asks again
+		// once its lowest point is a band below the surface's own level less
+		// its height - that gap is what a raise buys.
+		constexpr float kMeasuredSinkPerSecond = 0.57f;
+		const float triggerLowest = (surface - kHeight) - kBand;
+		const float fallsUntilAsked = lowest - triggerLowest;
+		Require(fallsUntilAsked / kMeasuredSinkPerSecond > 3.0f,
+			"A raise left less than three seconds of settling before the body "
+			"is below the surface again, so the object is still being "
+			"re-lifted every few seconds rather than resting");
+	}
+
+	// 2d. A sink just over the band is acted on, and the answer still lands
+	//     inside the blanket rather than being the raw distance.
+	{
+		const float sink = kBand * 1.2f;
+		const float rise = LiftOntoSnow(
+			surface - 5.0f - sink, 5.0f, surface, lift, kBand);
+		Require(rise > kBand,
+			"A sink just past the band produced a raise the caller's own "
+			"threshold would refuse, so the object sits below the surface "
+			"with nothing to do about it");
+		Require(rise < lift,
+			"A banded raise was not held inside the blanket");
+	}
+
+	// 3. An object already at or above the snow is never moved.  Gear on a
+	//    rock, on a floor, on a table must be left alone - a rule that could
+	//    lower it would sink it into a surface it was never on.
+	{
+		Require(LiftOntoSnow(35.0f, 5.0f, surface, lift, kNoBand) == 0.0f,
+			"An object resting exactly at the snow was moved");
+		Require(LiftOntoSnow(80.0f, 5.0f, surface, lift, kNoBand) == 0.0f,
+			"An object standing well clear of the snow was pulled down");
+	}
+
+	// 4. Taller than the blanket: left alone, because such an object's top is
+	//    already above the snow when it stands on the land.
+	{
+		Require(LiftOntoSnow(0.0f, 50.0f, surface, lift, kNoBand) == 0.0f,
+			"An object taller than the blanket was raised, so its top would "
+			"end above a snow it was already standing in");
+	}
+
+	// 5. Clamped to the blanket.  A lift larger than the snow means the
+	//    measurement is wrong, not that the object is buried deeper than the
+	//    world is thick; the blanket is the bound because it is the distance
+	//    between the two surfaces being confused.  With the margin added on
+	//    the way out it is still the blanket that bounds the answer - the
+	//    margin must not push the move past it.
+	{
+		const float rise = LiftOntoSnow(-500.0f, 5.0f, surface, lift, kNoBand);
+		Require(rise == lift,
+			"A misread position produced a lift larger than the blanket, so "
+			"the object would be thrown into the air");
+
+		Require(LiftOntoSnow(-500.0f, 5.0f, surface, lift, kBand) == lift,
+			"The landing margin pushed a raise past the blanket, so the "
+			"object would be placed above the snow it was being laid into");
+	}
+
+	// 6. No blanket, or nothing measured: nothing moves.  These are the
+	//    states where any lift would be invented rather than derived.
+	//
+	//    A negative band is clamped rather than trusted: a caller that
+	//    passed one would otherwise have the comparison below read as
+	//    "always act" and could be handed a negative raise, which the caller
+	//    would carry out because it only ever tests the answer against a
+	//    positive threshold.
+	//
+	//    The case that can tell the two apart is a body that is *not* below
+	//    the surface: a raise of zero is the answer with the band clamped,
+	//    and a spurious three with the band taken raw.  An object deep under
+	//    the blanket gives the same answer either way, so asserting only on
+	//    that one would pass with the clamp deleted.
+	{
+		Require(LiftOntoSnow(-0.9f, 5.0f, surface, 0.0f, kNoBand) == 0.0f,
+			"An object was raised under a blanket of no thickness");
+		Require(LiftOntoSnow(-0.9f, 0.0f, surface, lift, kNoBand) == 0.0f,
+			"An unmeasured object height was used to raise an object");
+		Require(LiftOntoSnow(
+					std::numeric_limits<float>::quiet_NaN(), 5.0f, surface, lift, kNoBand) == 0.0f,
+			"A NaN position produced a lift");
+		Require(LiftOntoSnow(-0.9f, 5.0f, surface, lift, -1.0f) >= 0.0f,
+			"A negative dead band produced a negative raise, which is a move "
+			"the caller would carry out and a lowering the rule must never do");
+		Require(LiftOntoSnow(surface - 5.0f, 5.0f, surface, lift, -1.0f) == 0.0f,
+			"A negative dead band made the rule act on an object that is not "
+			"below the snow at all - the band was taken raw instead of being "
+			"clamped, so its test reads as 'always act'");
+	}
+
+	// 7. The rule only ever lifts.  Stated as its own case because the sign is
+	//    the part that is easy to get wrong and impossible to see: a rule
+	//    that could lower an object would look identical on every fixture
+	//    above this one.
+	{
+		Require(LiftOntoSnow(-0.9f, 5.0f, surface, lift, kNoBand) > 0.0f,
+			"An object under the blanket was not raised at all");
+		Require(LiftOntoSnow(surface + 1.0f, 5.0f, surface, lift, kNoBand) == 0.0f,
+			"The rule can lower an object, which would sink gear placed on "
+			"any surface above the snow");
+	}
+
+	std::puts("PASS lift onto snow: buried objects raised, standing gear untouched, idempotent");
+}
+
 // Rules inside the stamp shader that a C++ assertion cannot reach any other
 // way.
 //
@@ -2328,11 +3264,11 @@ void CheckContactReach()
 
 	// --- the surface, first, because everything else is measured from it ---
 	//
-	// This is the assertion that the sabotage run proved was missing.  With
+	// This is the assertion that a change can otherwise slip through.  With
 	// the walk's `land + LiftAt` written inline in Clipmap.cpp, flipping it
-	// back to the bare land left every test green and every byte pin
+	// back to the bare land leaves every test green and every byte pin
 	// matching, because that file is not linked here and a string cannot tell
-	// two additions apart.  The arithmetic is now a named function for that
+	// two additions apart.  The arithmetic is a named function for that
 	// reason, and these are its assertions.
 	//
 	// The recorded fault: a weapon 3 units above the land under a 10-unit
@@ -2671,9 +3607,9 @@ void CheckMarkAlignment()
 	// length against the width.  This repeats that sequence on the recorded
 	// numbers, so an edit that changes the sequence here fails.
 	//
-	// A sabotage that removed the function call from the caller was caught
-	// only by a byte pin, because the assertions above exercise the functions
-	// rather than the order they are used in.
+	// Dropping the call from the caller is caught only by a byte pin,
+	// because the assertions above exercise the functions rather than the
+	// order they are used in.
 	{
 		// The recorded weapon: hull 67.89 long, marks drawn at 24 half length,
 		// thickness arriving at 2.2 through the ordinary width route.
@@ -3405,7 +4341,7 @@ void CheckMagicPatterns(Field& field)
 			//
 			// When every capsule was identical - same thickness, same offset,
 			// same height - the thinnest sector could not fall below the width
-			// of one capsule, and r32 measured 15.  The bank is now uneven on
+			// of one capsule, which measured 15.  The bank is now uneven on
 			// purpose: each capsule draws its own thickness, so some are thin,
 			// and the thinnest sector is genuinely thinner.  Measured over five
 			// seeds at the shipped jitters, it lands between 7 and 11.
@@ -3519,15 +4455,15 @@ void CheckMagicPatterns(Field& field)
 			// the number that decides whether the bank reads as heaps or as
 			// a rim - and the number the previous two assertions cannot see.
 			//
-			// This is the assertion r35 was missing.  r35 fixed the span
-			// cancellation above, so the heaps genuinely came out different
+			// This is the assertion the two above cannot make.  With the span
+			// cancellation fixed, the heaps genuinely come out different
 			// widths (68.7 to 77.8 degrees at the tuned reach, measured), and
-			// the assertion above passed.  A player still reported no change
-			// in game, and was right: at kRimFill = 0.68 the eight spans
-			// summed to 479 units against a circumference of 519 - 92%
-			// coverage - so the heaps still overlapped into one continuous
-			// collar and the outer edge stayed a circle.  Varying the widths
-			// of the links does not break a chain.
+			// both assertions above pass.  The bank still reads as unchanged
+			// in game, and rightly: at kRimFill = 0.68 the eight spans sum to
+			// 479 units against a circumference of 519 - 92% coverage - so
+			// the heaps still overlap into one continuous collar and the
+			// outer edge stays a circle.  Varying the widths of the links
+			// does not break a chain.
 			//
 			// Coverage is measured as (sum of spans) / (ring circumference),
 			// the circumference taken at the *mean* heap distance so the two
@@ -3551,16 +4487,17 @@ void CheckMagicPatterns(Field& field)
 				const float circumference = 6.28318531f * (distanceSum / 8.0f);
 				Require(circumference > 0.0f, "Explosion ring has no circumference");
 				const float coverage = spanSum / circumference;
-				// broken 1.00, r35 0.92, r36 0.69 at the tuned reach.
+				// broken 1.00, cancelled 0.92, current 0.69 at the tuned
+				// reach.
 				//
 				// The upper bound is 0.90 rather than the 0.88 first chosen,
-				// because 0.88 would clear r35 - the revision this assertion
-				// exists to reject - by 4.9% of its own value, and a bound
-				// that sits that close to the thing it rejects is one tuning
-				// pass away from silently accepting it.  0.90 separates r35
-				// by 2.6% while leaving r36 21% of headroom, which is the
-				// asymmetry this bound wants: cheap to pass, hard to sneak
-				// past.
+				// because 0.88 would clear the cancelled-span value - the
+				// revision this assertion exists to reject - by 4.9% of its
+				// own value, and a bound that sits that close to the thing it
+				// rejects is one tuning pass away from silently accepting it.
+				// 0.90 separates that value by 2.6% while leaving the current
+				// one 21% of headroom, which is the asymmetry this bound
+				// wants: cheap to pass, hard to sneak past.
 				Require(coverage < 0.90f,
 					"Explosion heaps cover nearly the whole ring - the bank is a continuous rim, "
 					"so the outer edge will read as a drawn circle");
@@ -3633,8 +4570,8 @@ void CheckMagicPatterns(Field& field)
 		//     why the seed is hashed from the impact position rather than
 		//     counted or timed.
 		//   - the ring is uneven in height, not just in placement.  Uniform
-		//     heights with jittered centres is the shape r32 shipped, and the
-		//     complaint it drew was exactly this.
+		//     heights with jittered centres is the shape that was rejected,
+		//     and the complaint it drew was exactly this.
 		const auto bankA = draw(ImpactPatterns::Explosion(20, 0x1111u), true, 1.5f, 1, true, 0.65f);
 		const auto bankB = draw(ImpactPatterns::Explosion(20, 0x2222u), true, 1.5f, 1, true, 0.65f);
 		const auto bankA2 = draw(ImpactPatterns::Explosion(20, 0x1111u), true, 1.5f, 1, true, 0.65f);
@@ -3813,6 +4750,15 @@ int main(int argc, char** argv)
 		CheckAxisSpan();
 		CheckMeshShape();
 		CheckDropAt();
+		CheckMeshTrust();
+		CheckDepthCap();
+		CheckMarkReachesTheObject();
+		CheckBuriedWidth();
+		CheckVerticalReach();
+		CheckProjectionReadings();
+		CheckLiftSettledBand();
+		CheckLiftMustFreeBody();
+		CheckLiftOntoSnow();
 		// Dispatched before the source rules so that a change to the rim's
 		// geometry is reported as the thing it breaks - a bank that is not
 		// there - rather than as a line of text that moved.

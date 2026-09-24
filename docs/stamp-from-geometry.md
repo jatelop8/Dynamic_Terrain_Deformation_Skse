@@ -3,8 +3,8 @@
 ## Status
 
 Shipped.  A carried weapon's mark is placed, sized and shaped from where the
-object really is: its measured axes, its own buried stretch, and — when the mesh
-can be read — its own vertices.  Nothing about the mark is keyed to a weapon by
+object really is: its measured axes, its own buried stretch, and - when the mesh
+can be read - its own vertices.  Nothing about the mark is keyed to a weapon by
 name, so a new weapon needs no new tuning.
 
 This document is the design record.  It is written to be read on its own: it
@@ -18,7 +18,7 @@ A carried weapon left a furrow that did not match the weapon.  The report was
 concrete: *"walking, running and sprinting put the weapon in different places,
 but the furrow is the same, so it feels wrong."*
 
-The obvious reading is that the numbers feeding the stamp are stale — read once
+The obvious reading is that the numbers feeding the stamp are stale - read once
 at rest and never updated.  That reading is wrong, and the log says so.
 
 `ActorShapes::GetExtent` and `ActorShapes::GetLongAxis` read the live
@@ -37,7 +37,7 @@ pose:
 
 Those are live numbers.  What `Clipmap.cpp` did with them was the problem: it
 read the extent and the axis, **logged them, and then placed the stamp at the
-bound centre** — one point rigid to the body, which does not care what the legs
+bound centre** - one point rigid to the body, which does not care what the legs
 are doing.
 
 So the diagnosis is not "the measurement is stale".  It is:
@@ -53,7 +53,7 @@ So the diagnosis is not "the measurement is stale".  It is:
    `ShaftContactLineLength` (12.0) are constants applied to every weapon.
 
 Only (3) is a case for geometry. (1) and (2) are arithmetic on numbers that
-already exist — which is why placement was solved before shape, and why the
+already exist - which is why placement was solved before shape, and why the
 shape work is layered on top of a placement that already worked.
 
 ## Placement: three approaches, and why the walk is the one
@@ -72,7 +72,7 @@ This does move the mark off the bound centre, and for an object standing on its
 end it lands on the ground.  But the bow's half length is **67.89 units**, and a
 weapon carried at an angle has its lower end hanging in the air rather than in
 the snow.  Stepping that far along the axis therefore moved the mark **further
-out than the character is wide** — the same class of error as the bound centre it
+out than the character is wide** - the same class of error as the bound centre it
 replaced, only further away.  Caught before testing by computing what the step
 would be.  Kept as `ContactPoint::LowestEnd`, the last-resort placement when no
 ground height is available at all.
@@ -99,7 +99,7 @@ single `landZ` is the ground under the **bound centre**, so:
 
 - on a slope the crossing is wrong by the height change across the offset;
 - a level axis (`p.z` constant, i.e. a rod held horizontal) has no crossing at
-  all and falls back to the centre — so a rod lying across a slope is invisible
+  all and falls back to the centre - so a rod lying across a slope is invisible
   to it;
 - it answers "where", not "how much of the object is in".
 
@@ -126,14 +126,14 @@ the ground rather than from a constant:
 | Is it touching? | `ShaftGroundClearance` on the bound's bottom | does any sample lie under the land |
 
 The two ends are bisected after the walk, so the answer does not depend on how
-finely the axis was walked — the walk only has to **find** the patch.  The
+finely the axis was walked - the walk only has to **find** the patch.  The
 residual `|p.z - land|` at each refined end is reported, which is what makes the
 claim "the ends are on the surface" checkable rather than asserted.
 
 ### The centre line is not where the weapon is
 
-A walk along the axis follows the **centre line** — the dominant mesh's
-principal axis — and a line can only cross the ground where the line itself
+A walk along the axis follows the **centre line** - the dominant mesh's
+principal axis - and a line can only cross the ground where the line itself
 goes.  A bow carried at an angle has its limbs hanging below that middle, so the
 axis stays clear along its whole length while the bow itself is already through
 the surface:
@@ -149,8 +149,8 @@ The offset that fixes this is the **axis-to-surface distance at the point in
 question**, `ContactPoint::DropAt` / the `lowOffset` handed to `AxisSpan`:
 project the object's lowest point onto the axis to get `t`, read the axis height
 there (`cz + t * half * az`), and subtract the lowest point's own `z`.  For a
-vertical axis there is no such offset — the centre *is* directly above the
-lowest point — so it returns zero and the caller's floor of the half thickness
+vertical axis there is no such offset - the centre *is* directly above the
+lowest point - so it returns zero and the caller's floor of the half thickness
 stands.
 
 Two properties matter, and both are asserted:
@@ -164,7 +164,7 @@ Two properties matter, and both are asserted:
 - **It moves every sample, not just the gate.**  The walk's height function is
   `(z - a_lowOffset) - land` for every sample it takes, so the walk and the gate
   ask about the same surface.  A weapon the centre line already sees is measured
-  the same way as one it does not — there is no second, offset-only route, and
+  the same way as one it does not - there is no second, offset-only route, and
   deliberately so: a guard that conditions behaviour on "did the other route
   find nothing" has to be re-read every time the other route changes.
 
@@ -176,7 +176,7 @@ drop 52.20  beside  deep 52.20        (a bow, before the fix)
 drop  9.14  beside  deep  8.32        (the same bow, after)
 ```
 
-A depth equal to the drop says nothing about the snow underneath — it is the
+A depth equal to the drop says nothing about the snow underneath - it is the
 drop with zero added to it, because the depth was being measured *and then*
 having the offset added back onto a figure already measured from the offset
 surface.  That is why turning the drop down looked like it was doing nothing.
@@ -196,11 +196,11 @@ cannot answer a shape question even in principle:
 
 | Object | Hull | What is lost |
 |---|---|---|
-| Bow | capsule + a cylinder for the limbs | the **arc** — a bow and a staff with the same hull leave the same mark |
-| Shield | a box or disc | the **face** — the rim and the boss are the parts that would touch |
+| Bow | capsule + a cylinder for the limbs | the **arc** - a bow and a staff with the same hull leave the same mark |
+| Shield | a box or disc | the **face** - the rim and the boss are the parts that would touch |
 | Axe, hammer, pick | capsule for the haft | the **head**, which is what actually lands |
 
-The request was for the marks to stop needing per-weapon tuning — there are too
+The request was for the marks to stop needing per-weapon tuning - there are too
 many weapons and their shapes differ.  That is a shape request, and the hull's
 own limits are the case *for* walking the vertices, not against it.  Both routes
 ship: `StampFromMesh = 1` uses the vertices, `0` is the hull-only behaviour.
@@ -218,18 +218,18 @@ BSGraphics::TriShape::vertexDesc       -> the stride and the attribute offsets
 `sceneObject`, so the mesh measured is the mesh the hull belongs to.
 
 **The dangerous part is the stride.**  A stride that is wrong by four bytes does
-not crash — it manufactures plausible floats out of a neighbouring attribute, and
+not crash - it manufactures plausible floats out of a neighbouring attribute, and
 the mark lands somewhere arbitrary with nothing in the log to say so.  Four
 candidate layouts are therefore tried (`desc`, `size0`, `pos16`, `off16`) and the
 winner is chosen by comparing the fitted mesh against the engine's own
 `modelBound`, which is the one independent number available for the same mesh.
 The winning layout's name and the error are printed.  A tolerance of
-`0.45 * boundRadius + 1.0` is deliberately loose — this catches a wrong stride,
+`0.45 * boundRadius + 1.0` is deliberately loose - this catches a wrong stride,
 it does not certify a hundredth.
 
 The fit is AABB, then the principal axis by covariance, then a half width per
 1/16 of the length.  Only the **dominant** geometry supplies the axis and the
-half length — the largest mesh by box diagonal.  A bow's two limbs and its grip
+half length - the largest mesh by box diagonal.  A bow's two limbs and its grip
 are three geometries; the largest one aims the mark.  The **lowest corner of the
 union** is what the gate compares, so a small piece hanging low still counts as
 touching.
@@ -249,7 +249,7 @@ For a 24-unit mark, that is monotone in the key:
 
 | `ShaftMarkFootAspect` | half width |
 |---|---|
-| 0.50 | 12.0 (a footprint's own width — "fully aligned") |
+| 0.50 | 12.0 (a footprint's own width - "fully aligned") |
 | 0.35 | 8.4 (narrower, between a sliver and a foot) |
 | 0.30 | 7.2 (half a footprint) |
 | 0.25 | 6.0 |
@@ -263,16 +263,16 @@ footHalfWidth = LineWidth(12.1485f, 1.0f, 0.0f, 0.0f);   // the buggy form
 ```
 
 `LineWidth`'s last line is `return scaled < a_max ? scaled : a_max;`.  Passing
-`a_max = 0.0f` therefore does **not** mean "no ceiling" — it means "return
+`a_max = 0.0f` therefore does **not** mean "no ceiling" - it means "return
 zero".  The footprint's half width came back as `0.0`, the alignment's ceiling
 fell back to the bare `ShaftLineMaxWidth` (6.0), and every mark was cut to half
 the shape it was aligning to.  The visible result: of 113 marks, 109 came out at
-exactly half length 24.00, half width 6.00 — every frame stamped the same 4:1
+exactly half length 24.00, half width 6.00 - every frame stamped the same 4:1
 ellipse, so walking laid a row of identical blocks with evenly spaced ridges
 between them.
 
-Two things were done about it.  The arithmetic now has a name of its own —
-`ContactPoint::FootprintHalfWidth` — so the mistake cannot be made again by
+Two things were done about it.  The arithmetic now has a name of its own- 
+`ContactPoint::FootprintHalfWidth` - so the mistake cannot be made again by
 passing the wrong constant to a generic helper.  And the offline test walks the
 **caller's real arguments** rather than a hand-computed stand-in: an assertion
 that only calls a pure function with idealised figures passes while the shipped
@@ -306,7 +306,7 @@ down touches over a long one, and the disturbed snow scales with each.
 
 **The shape test.**  A mark is drawn as a line only when it is longer than it is
 wide, floored at `max(ShaftLineMinLength, half thickness)`.  The earlier rule
-compared the drawn half length against `ShaftStampMaxRadius` — the *ceiling the
+compared the drawn half length against `ShaftStampMaxRadius` - the *ceiling the
 disc radius is clamped to*, a number chosen for how fat a foot's mark may be,
 doing duty as how short a furrow may be.  Nothing connects the two, and the cost
 was a bow's limb 0.79 units under the snow reported as a 4-unit circle.  A stout
@@ -315,7 +315,7 @@ deliberate: a 1.76-unit line beside a 4.90 half width is a blob with a
 direction.
 
 **The two routes must not share a ceiling.**  The hull route has no measurement
-behind it, so it keeps `ShaftContactLineLength` exactly as it was — that constant
+behind it, so it keeps `ShaftContactLineLength` exactly as it was - that constant
 is the plank guard it always was.  A measured stretch may draw up to the object's
 own length.  The rule lives in `ContactPoint::DrawCeiling` rather than as inline
 ternaries in `Clipmap.cpp`, for a reason the reverse-check table records: a
@@ -325,7 +325,7 @@ the caller, so a sabotage that gave both routes the same ceiling survived.
 ## The rim: giving a groove the snow a footprint gets
 
 A footprint reads as a footprint partly because loose snow is heaped around it.
-A carried weapon's rut had the rim turned off — which is the same thing as
+A carried weapon's rut had the rim turned off - which is the same thing as
 saying a weapon's rut could never have those piles.
 
 The rim's *height* was never the problem: a shaft's `stamp.rim` is
@@ -341,13 +341,13 @@ multiplied back by the half length, so one unit of it measures the **half length
 along the long axis** and the **half width along the short one**.  Both are just
 a `float` called `d`.
 
-The rim's band was handed to it directly as `halfWidth * rim.x` — a width — so a
+The rim's band was handed to it directly as `halfWidth * rim.x` - a width - so a
 band of a given size in those units came out in the world narrower along a
 groove's two sides by the whole aspect ratio, and the sides are where the eye is
 when it looks at a mark as long as a weapon.  The recorded marks make it
 concrete: half length 5.3 to 12.6 against a half width of 2.6 to 2.9, so the
 aspect ratio is 1.8 to 4.9, and a band of `halfWidth * 1.5 * (1 + 0.15)` is 4.49
-to 5.00 of the mark's units — **6.0 to 6.7 cells** across the ends on a 0.75 unit
+to 5.00 of the mark's units - **6.0 to 6.7 cells** across the ends on a 0.75 unit
 grid, against **1.2 to 3.7 cells** along the sides.  On the long thin mark the
 line test uses (half length 24.5, half width 1.1, aspect 22) the bank reached
 `1.65 * 1.15 * 1.1 / 24.5 = 0.085` of a world unit past the groove, under a tenth
@@ -357,8 +357,8 @@ with no snow beside it at all.
 The fix measures the edge in world units.  `StampOutlineOvershoot` returns the
 first-order distance to the outline, `(len - 1) / |grad len|` with
 `n = (dot(delta, forward) / halfLength, dot(delta, right) / halfWidth)`.  That is
-exact along both axes — `halfLength * (len - 1)` on the long one and
-`halfWidth * (len - 1)` on the short one — and it is identically
+exact along both axes - `halfLength * (len - 1)` on the long one and
+`halfWidth * (len - 1)` on the short one - and it is identically
 `StampDistance - s.z` for a circle, so every round mark keeps its rim, its lip
 band and its falloff unchanged.
 
@@ -378,13 +378,13 @@ inherit a previous frame's line width.
 
 ### A band narrower than the cell it is written to is not a band
 
-The floor — `2.0f * Window.z`, two cells — is why the band is held to the size of
+The floor - `2.0f * Window.z`, two cells - is why the band is held to the size of
 the grid it is written to.  A band narrower than the grid cannot be drawn at
 all, because the texels either side of the outline miss it; and the coarse
 level's cell is 3.0 rather than 0.75, so a floor that follows the cell is also
 what stops that level writing a bank it cannot resolve.  At level 0 the floor
-does not bind for a shipped weapon — the line's half width is floored at 1.1 and
-`1.1 * 1.5 = 1.65` against a floor of 1.5 — so it is the coarse level and very
+does not bind for a shipped weapon - the line's half width is floored at 1.1 and
+`1.1 * 1.5 = 1.65` against a floor of 1.5 - so it is the coarse level and very
 thin marks it is there for.
 
 No setting changes with this and none is added: `ShaftStampRim` still scales the
@@ -411,8 +411,8 @@ float  bandScale = 1.0f + jitter - 0.25f * MarkRimJitter.x;
 if (StampShape[i].z > 0.0f && MarkRimJitter.x > 0.0f)
 ```
 
-`StampShape[i].z` is the half width, non-zero only for a line, so every circle —
-every footprint, every fireball — takes the branch it always did, bit for bit.
+`StampShape[i].z` is the half width, non-zero only for a line, so every circle- 
+every footprint, every fireball - takes the branch it always did, bit for bit.
 The second term is an escape hatch: `ShaftMarkRimJitter = 0` restores the smooth
 edge **exactly**, not approximately.  That is provable from the expression rather
 than measured: with `amount = 0` the jitter term is zero and `bandScale` is
@@ -438,11 +438,11 @@ a 113-second run spent every one of them before it had finished loading:
 
 The last shaft line of any kind was written eleven seconds in, and the ninety
 seconds after it held nothing.  Those silent frames are exactly the ones a player
-is in when they notice the furrow has stopped — and from the outside a silent
+is in when they notice the furrow has stopped - and from the outside a silent
 frame that was fine is indistinguishable from a silent frame that was not.
 `GatherStamps` already carried a note about the same fault being fixed once
-before, for the collidable probe — *"The first run burned its whole allowance in
-four frames and never saw the frames that had the bow drawn"* — but the four
+before, for the collidable probe - *"The first run burned its whole allowance in
+four frames and never saw the frames that had the bow drawn"* - but the four
 shaft budgets had never been given that treatment.
 
 Two changes:
@@ -478,7 +478,7 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
   refusal inside three times is the gate's doing and one outside is the
   carry's.  With no refusal sampled there is nothing to blame the gate for.
 
-  The counts are nested — `seen`, then `judged`, then `marked` and `refused` —
+  The counts are nested - `seen`, then `judged`, then `marked` and `refused`- 
   so that a window in which a weapon was carried and produced nothing still
   says which stage it stopped at, instead of looking the same as a window in
   which nothing was carried at all.
@@ -490,7 +490,7 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
 | `ContactPoint::LowestEnd` | `src/ContactPoint.h` | The axis's lower end. Last-resort placement when no ground height is available. |
 | `ContactPoint::AxisGroundHit` | `src/ContactPoint.h` | Solves for the crossing. Kept as the `ShaftSpanFromContact = 0` path. |
 | `ContactPoint::AxisSpan` | `src/ContactPoint.h` | Walks the axis, returns the buried stretch, its middle, its length, its depth, and the gap when nothing is buried. The primary path. |
-| `ContactPoint::DropAt` | `src/MeshShape.h` | The axis-to-surface distance at a point — a thickness, not a length. |
+| `ContactPoint::DropAt` | `src/MeshShape.h` | The axis-to-surface distance at a point - a thickness, not a length. |
 | `ContactPoint::HalfLengthFromStretch` | `src/ContactPoint.h` | Converts the walk's full length to the shader's half axis. |
 | `ContactPoint::FootprintHalfWidth` | `src/ContactPoint.h` | A footprint's half width, by name, so it cannot be passed through a generic clamp. |
 | `ContactPoint::LengthDerivedWidth` | `src/ContactPoint.h` | The mark's half width from its own length and aspect, with the footprint as a ceiling rather than a floor. |
@@ -524,7 +524,7 @@ shipped code was wrong.
 | `ShaftContactLineLength` | 12.0 | On the hull route, the hard cap. On the measured route, only the *floor* of the ceiling, so a long object may draw past it. |
 | `ShaftSpanLengthScale` | 2.2 | How much longer than the buried stretch the trail is drawn. `1.0` draws exactly the measurement. **This is the knob for "the trail is too short".** |
 | `ShaftLineMinLength` | 1.6 | Shortest half length worth drawing as a line. The effective floor is `max` of this and the object's own half thickness. |
-| `ShaftLineWidthScale` / `MinWidth` / `MaxWidth` | 1.0 / 1.1 / 6.0 | Multiplier, floor and ceiling on the measured thickness — and on the mesh's half width when one was measured. |
+| `ShaftLineWidthScale` / `MinWidth` / `MaxWidth` | 1.0 / 1.1 / 6.0 | Multiplier, floor and ceiling on the measured thickness - and on the mesh's half width when one was measured. |
 | `ShaftMarkAlignToFoot` | 1 | Derive the mark's width from its own length, aligned to a footprint's shape. `0` restores the thickness-derived width and the uncapped length. |
 | `ShaftMarkMaxAspect` | 4.0 | Ceiling on the width this alignment may ask for. A footprint itself sits at 2.0, and 64 is effectively no cap. |
 | `ShaftMarkFootAspect` | 0.35 | The aspect the mark is drawn at when it is aligned. **This is the width knob.** |
@@ -553,7 +553,7 @@ the path entirely and leave the geometry to speak alone.
 
 - `ShaftStampRim` (1.0) is a policy: whether a weapon's rut gets the loose snow a
   footprint gets.  It could be 0 only while the rim's *band* was being read off
-  the mark's reach — tens of units for a line — so any rim would have raised a
+  the mark's reach - tens of units for a line - so any rim would have raised a
   bank as wide as the weapon is long.  With the band taken from the mark's half
   width instead, the piles hug the groove and the key can be on.  It scales
   `response.rimScale`, so the surface profile still has the last word on how much
@@ -566,20 +566,20 @@ the path entirely and leave the geometry to speak alone.
   far.  At 1.0 the width-derived depth is superseded and a carried weapon digs to
   a foot's depth; at 0 the depth behaves as it did before this key existed.
 - `ShaftLowOffset` (1) decides whether the walk is told the weapon's own drop
-  below its centre line.  The drop itself is measured — from the mesh where there
-  is one, from the hull thickness otherwise — so this only decides whether it is
+  below its centre line.  The drop itself is measured - from the mesh where there
+  is one, from the hull thickness otherwise - so this only decides whether it is
   used.
 - `ShaftContactLineLength` (12.0) is a **floor for the ceiling**, not the source
   of the length.  The length comes from the ground; this is the smallest ceiling
   allowed, and the ceiling actually applied is the larger of it and the weapon's
-  own length.  **On the hull route it is still the hard cap** — that route has no
+  own length.  **On the hull route it is still the hard cap** - that route has no
   measurement behind it, so the constant stays the plank guard it always was, and
   the rule is `ContactPoint::DrawCeiling` rather than a pair of inline ternaries.
 - `ShaftSpanLengthScale` (2.2) is the one place a judgement enters the *measured*
   length: the walk reports the strictly-buried stretch, and the trail is drawn
   longer than that on purpose.  It is a scale rather than an offset because the
-  quantity it corrects — the samples either side of a crossing, and the snow
-  pushed aside without being sunk into — grows with the stretch.
+  quantity it corrects - the samples either side of a crossing, and the snow
+  pushed aside without being sunk into - grows with the stretch.
 - `ShaftLineMinLength` (1.6) is the absolute floor on a drawable half length,
   used together with the object's own half thickness.  Below it the disc is kept,
   because a line shorter than it is wide reads as a dot with a direction.
@@ -604,49 +604,49 @@ assert the arithmetic rather than a reimplementation of it.  The suite reports
 
 The groups, in the order they run:
 
-1. **A rod standing in the ground** — centre ten units up, thirty-unit reach, so
+1. **A rod standing in the ground** - centre ten units up, thirty-unit reach, so
    twenty units are buried.  Length, both crossings, depth, the mark's height
    and the residual are each asserted against arithmetic on the input.
-2. **Carried clear is not touching** — a rod hanging ten units above the ground
+2. **Carried clear is not touching** - a rod hanging ten units above the ground
    must report no contact and a gap of ten.  This is the assertion the reverse
    check has to break.
-3. **A touch with no length** — the lower end exactly on the surface has no
+3. **A touch with no length** - the lower end exactly on the surface has no
    buried stretch and no gap, and the closest approach must be that end rather
    than the centre, or the relaxed gate would place the mark in the air.
-4. **A rod laid across a slope** — buried over its outer half, ten units of
+4. **A rod laid across a slope** - buried over its outer half, ten units of
    contact with its middle fifteen units along.  This is the case the
    single-crossing placement could not see at all: a level axis has no
-   `p.z(t) = landZ` solution with one land height, so it returned the centre —
+   `p.z(t) = landZ` solution with one land height, so it returned the centre- 
    fifteen units from where the rod is.  The slope makes the walk necessary; a
    level axis would have hidden the bug.
-5. **Deeper in the snow draws longer** — the same rod at two heights must give
+5. **Deeper in the snow draws longer** - the same rod at two heights must give
    two different buried lengths, more than four units apart.  **This is the
    assertion a length constant cannot pass**, and without it every other
    assertion here would pass on an implementation that returned a fixed length.
-6. **Degenerate inputs** — zero half length, zero axis, an unreadable land, and
+6. **Degenerate inputs** - zero half length, zero axis, an unreadable land, and
    a fully buried object.  The last one must report `resid < 0`: no end ran off
    the object, so there is no crossing to check and the field must decline to
    claim one rather than report a checked zero.
-7. **The hull is what touches** — a 3-unit clearance with a 5-unit hull is
+7. **The hull is what touches** - a 3-unit clearance with a 5-unit hull is
    negative; a thin hull is positive; an unmeasurable gap is not a contact.
-8. **`PASS mesh shape:`** — a straight 34-unit rod with a 2-unit radius comes
+8. **`PASS mesh shape:`** - a straight 34-unit rod with a 2-unit radius comes
    out with its axis along its length (`|ax| > 0.99`, unit length), its half
    length within 0.5, its half width within 0.2 of the ring radius, and its
    width bands **flat** (max/min `< 1.05`, so a uniform object is not handed a
    fake taper).  A taper built from 6.0 at one end to 0.6 at the other must show
    a band ratio `> 4.0` (the data's own ratio is 10x; the assertion is set below
-   it because the bands average over 1/16 of the length) — and the axis sign
+   it because the bands average over 1/16 of the length) - and the axis sign
    must be settled by the dominant component (`ax > 0.99`), without which
    "which end is band 0" is a coin toss.  `WidthOver` must return three
    different answers over the wide end, the narrow end and the whole object
    (`wide > narrow * 3`), and a stretch asked for **past** the end must come
-   back as the end band to within 0.01 rather than being extrapolated.  An arc —
-   48 stations on a 40-unit radius, 60 degrees each way, limbs 0.5 thick — must
+   back as the end band to within 0.01 rather than being extrapolated.  An arc- 
+   48 stations on a 40-unit radius, 60 degrees each way, limbs 0.5 thick - must
    have a box more than twice its own limb thickness and bands that are not
    flat (`> 1.4`); that is the property a capsule cannot have, and it is the
    reason the request could not be answered by the hull.  NaN, an infinity and
    a two-vertex "mesh" are each refused.
-9. **`PASS mesh place:`** — the lowest corner is exact under identity in all
+9. **`PASS mesh place:`** - the lowest corner is exact under identity in all
    three coordinates (not merely at `minZ`), a quarter turn about Z swaps the
    box's extents and leaves the height alone, a 45-degree tilt about Y moves the
    lowest corner to `(minZ - maxX) * s` and carries the long axis to the tilt of
@@ -654,7 +654,7 @@ The groups, in the order they run:
    what is being tested, not the convention), and a transform that reports
    failure is refused rather than half-applied.  `BoundAgrees` is checked four
    ways: a box against its own sphere (error `< 0.01`), a sphere three radii
-   away (must refuse), a zero radius (must refuse — otherwise any box passes),
+   away (must refuse), a zero radius (must refuse - otherwise any box passes),
    and a NaN radius (must refuse).
 10. **`PASS axis span`'s offset groups** (three of them, folded into
     `CheckAxisSpan`):
@@ -662,7 +662,7 @@ The groups, in the order they run:
       A level line three units above flat ground with a 3.5-unit drop: the line
       touches nothing, the weapon's own end is half a unit down.  This must
       report a contact, a whole-length stretch, a depth of 0.5 (the submergence
-      on one surface — *not* the drop) and a residual of `-1`, because a level
+      on one surface - *not* the drop) and a residual of `-1`, because a level
       contact has no crossing to bisect.  **This is the assertion that fails
       when the offset is not applied**, which is what makes it worth having.
     - **A surface that really crosses the weapon.**  A hill peaking under the
@@ -670,7 +670,7 @@ The groups, in the order they run:
       bring the line into it.  The stretch must be about 22.9 units and the
       residual must come out at zero, because both crossings are interior and
       both are bisected.  Note the geometry: the earlier attempts at this case
-      used **valleys** and both reported the whole object — a valley is deepest
+      used **valleys** and both reported the whole object - a valley is deepest
       under the middle, so the weapon is under the ground at its ends and clear
       in the middle, which puts both crossings on the weapon's own ends with
       nothing outside them to bisect against.  The geometry is written out in
@@ -681,8 +681,8 @@ The groups, in the order they run:
       stretch to the middle.  This is what the `t0 = -1` default exists for.
 
     Three guards were written to separate that last case from ground that is
-    simply lower than the walk was told — one on how many samples fell under,
-    one on where the crossings landed, one on the whole object's length — and
+    simply lower than the walk was told - one on how many samples fell under,
+    one on where the crossings landed, one on the whole object's length - and
     **all three rejected the contact they existed to find.**  On ground that is
     locally level the two cases are numerically identical, so the separation is
     not attempted in the walk at all; the walk reports and the caller decides,
@@ -691,11 +691,11 @@ The groups, in the order they run:
     full account.
 
     Also here: **a rod with a ten-unit drop**, chosen so that one end is buried
-    and one end is a real crossing — the shape the group is about.  Its length
+    and one end is a real crossing - the shape the group is about.  Its length
     is pinned to `38.0` rather than to a range, which is what makes it able to
     tell the two designs apart (`28.0` on the centre-line walk).
 
-11. **`PASS draw length`** — `CheckDrawLength`, over the pure length and width
+11. **`PASS draw length`** - `CheckDrawLength`, over the pure length and width
     functions.  The bow's numbers come from the log (67.89 long, 4.90 half
     thickness, and the recorded spans), so the assertions are against the
     session that prompted the change rather than against invented figures.
@@ -710,7 +710,7 @@ The groups, in the order they run:
     - **The floor follows the object.**  A 0.8-unit contact scaled to 1.76 must
       stay a disc on a bow (half width 4.90) and must *become a line* on a twig
       (half width 0.3).  Identical measurement, identical scale, opposite
-      outcomes — which is the pair that proves the floor is not a constant.  The
+      outcomes - which is the pair that proves the floor is not a constant.  The
       bow case is the honest one: 1.76 beside 4.90 really is a dot with a
       direction, and drawing it as a line would be worse than the dot.
     - **The ceilings hold.**  A 900-unit measurement must land on
@@ -719,7 +719,7 @@ The groups, in the order they run:
       directly: the hull route must return the constant, the measured route the
       object's own length, and a *short* object must still be capped by the
       constant.  Asserting this on `DrawCeiling` rather than on `DrawLength` is
-      deliberate — see the reverse-check table.
+      deliberate - see the reverse-check table.
     - **The width knob moves.**  `LengthDerivedWidth` must be monotone in the
       aspect key across the range the ini exposes, and the *caller's own
       arguments* are used rather than idealised ones.
@@ -727,11 +727,11 @@ The groups, in the order they run:
       caller's constants, and the assertion that separates it from the old
       clamping route is that `LineWidth` with a zero ceiling still returns zero.
       If a future edit makes the clamping route agree with the named one, the
-      assertion fails and says the comment explaining the bug is now wrong —
+      assertion fails and says the comment explaining the bug is now wrong- 
       which is the point: the test is also the guard on the explanation.
     - **A non-finite measurement is not a contact.**
 
-12. **`PASS drop`** — `CheckDropAt`, six geometries over the axis-to-surface
+12. **`PASS drop`** - `CheckDropAt`, six geometries over the axis-to-surface
     distance.  The numbers come from the log's bow: an object whose own centre
     sits far above its lowest vertex when it is tilted.
 
@@ -744,7 +744,7 @@ The groups, in the order they run:
       restatement.
     - **A four times longer rod does not change it.**  Same tilt, same thickness,
       four times the length: still 2.0.  **This is the assertion the contract
-      exists for** — the whole fault was length leaking into a thickness.
+      exists for** - the whole fault was length leaking into a thickness.
     - **A vertex under the middle** reports `t = 0` and its own drop.
     - **A vertex past the end** clamps to `t = -1` and reports the drop measured
       at the end, not at the vertex.
@@ -754,7 +754,7 @@ The groups, in the order they run:
       distance for a vertical object would double-count the length again.
     - **Non-finite input reports zero** rather than propagating.
 
-13. **`PASS shader rules`** — `CheckShaderStampRules`, which asserts on the
+13. **`PASS shader rules`** - `CheckShaderStampRules`, which asserts on the
     **shader source text** that `Clipmap::UpdateShaderSource()` produces.  This
     is a different kind of test from the rest of the suite: the rim's band width
     and the edge jitter are not in pure functions, they are in the emitted HLSL,
@@ -763,16 +763,16 @@ The groups, in the order they run:
 
     - `StampShape[i].z > 0.0f ? StampShape[i].z : s.z` must appear **exactly
       once**, so circles keep taking `s.z`.
-    - `s.z * rim.x` must appear **zero** times — the old band, which was a reach.
+    - `s.z * rim.x` must appear **zero** times - the old band, which was a reach.
     - The radial-bulge term must still appear once, so the assertion cannot pass
       on a source that was truncated.
     - The jitter gate must appear, and the escape hatch must be a gate on the
       amount rather than a hard constant, so `ShaftMarkRimJitter = 0` really
       does restore the smooth edge.
 
-14. **`PASS rim band`** — `CheckRimBand` dispatches the shipping shader twice
+14. **`PASS rim band`** - `CheckRimBand` dispatches the shipping shader twice
     for the same mark, once with its rim and once without, and reads the
-    difference — so the groove, the blanket standing over it and the churned
+    difference - so the groove, the blanket standing over it and the churned
     floor all cancel and what is left is the bank alone.  It is a behavioural
     check of the rim's geometry, not a source rule: its first assertion is how
     many cells of bank a line has along its side against how many it has across
@@ -781,7 +781,7 @@ The groups, in the order they run:
     `CheckShaderStampRules` deliberately, so that a change to the rim's geometry
     is reported as the thing it breaks rather than as a line of text that moved.
 
-15. **`PASS log budget`** — the rate limiter's own behaviour, including the
+15. **`PASS log budget`** - the rate limiter's own behaviour, including the
     property that a refusal does not advance the clock it was refused against.
 
 ### Reverse verification
@@ -796,24 +796,24 @@ not actually covered.
 | `DropAt` measures at the point | `lineZ = a_cz` (the centre's height) | 1 FAIL, *"The drop is not the object's thickness at the point"* |
 | `HalfLengthFromStretch` | `return a_stretch;` | 1 FAIL, *"The buried stretch was not halved"* |
 | the rim's band reference | `const float span = max(s.z * rim.x, 1e-4f);` | 1 FAIL, *"The stamp shader no longer takes the rim's band from the mark's half width"* |
-| the walk's reference surface | `a_f = (z - a_lowOffset) - land;` → `a_f = z - land;` | 1 FAIL, *"A shape whose own lowest point was in the snow reported no contact — the walk is still asking about the centre line"* |
+| the walk's reference surface | `a_f = (z - a_lowOffset) - land;` → `a_f = z - land;` | 1 FAIL, *"A shape whose own lowest point was in the snow reported no contact - the walk is still asking about the centre line"* |
 | the depth's reference surface | `out.depth = deepest;` → `out.depth = deepest + a_lowOffset;` | 1 FAIL, *"The depth is not how far the object's own lowest surface went under…"* |
 | the rim's band, its reference | `StampOutlineOvershoot(...)` → `d - s.z` | 1 FAIL, *"A line mark's bank is far narrower along its side than across its end"* |
 | the rim's band, its floor | `max(bandRef * rim.x, 2.0f * Window.z)` → `bandRef * rim.x` | 1 FAIL, *"A mark thinner than the grid threw up no snow along its side either…"* |
-| the rim's band, its floor's **value** | `2.0f * Window.z` → `1.0f * Window.z` | 1 FAIL, but **from the source rule only** — see below |
-| the alignment switch | `if (Settings::shaftMarkAlignToFoot)` → `if (false)` | **survived both the behavioural and the byte-level checks at first** — see below |
-| the walk's whole-body report | `AxisSpan` reports the whole object buried | 1 FAIL, *"A rod hanging ten units clear of the ground reported a contact — the touch rule is not geometric"* |
+| the rim's band, its floor's **value** | `2.0f * Window.z` → `1.0f * Window.z` | 1 FAIL, but **from the source rule only** - see below |
+| the alignment switch | `if (Settings::shaftMarkAlignToFoot)` → `if (false)` | **survived both the behavioural and the byte-level checks at first** - see below |
+| the walk's whole-body report | `AxisSpan` reports the whole object buried | 1 FAIL, *"A rod hanging ten units clear of the ground reported a contact - the touch rule is not geometric"* |
 | `WidthOver` returns the overall width | one number for the whole weapon | 1 FAIL, *"The width over a stretch does not follow the bands"* |
 | the length scale | `drawn = a_measured * a_scale` → `drawn = a_measured` | 1 FAIL, *"The length scale does not reach the drawn length"* |
-| the borrowed floor | `if (!(drawn > a_minLength))` → `if (!(drawn > 4.0f))` | 1 FAIL, *"A thin object's short contact was refused — the floor is not following the object's own width"* |
-| the ceiling rule, while it lived in `Clipmap.cpp` | both routes given the same ceiling | **BUILD_EXIT=0, ST_EXIT=0 — the suite did not notice** |
-| the same rule, after moving to `DrawCeiling` | the same sabotage | 1 FAIL, *"The measured route's ceiling is still the constant — a long object is capped at a short one's stub"* |
+| the borrowed floor | `if (!(drawn > a_minLength))` → `if (!(drawn > 4.0f))` | 1 FAIL, *"A thin object's short contact was refused - the floor is not following the object's own width"* |
+| the ceiling rule, while it lived in `Clipmap.cpp` | both routes given the same ceiling | **BUILD_EXIT=0, ST_EXIT=0 - the suite did not notice** |
+| the same rule, after moving to `DrawCeiling` | the same sabotage | 1 FAIL, *"The measured route's ceiling is still the constant - a long object is capped at a short one's stub"* |
 
 **Three sabotages are worth keeping as warnings.**
 
 *The ceiling rule that survived.*  While it lived as two lines inside
 `Clipmap.cpp`, a sabotage that gave both routes the same ceiling was **not
-caught** — the test does not link the caller, so it can only assert
+caught** - the test does not link the caller, so it can only assert
 `DrawLength`'s behaviour given a ceiling, never which ceiling was passed.  That
 is precisely the "the copy passes while the real path is wrong" failure this
 codebase has been bitten by before, and the fix is structural: the rule moved
@@ -821,13 +821,13 @@ into the header where it can be asserted.
 
 *The alignment switch.*  Replacing the condition with a literal `false` left the
 suite green, because the calls it guards are still in the file and therefore
-still satisfy the source pins — and `Clipmap.cpp` is not linked, so no
+still satisfy the source pins - and `Clipmap.cpp` is not linked, so no
 assertion could see it either.  What closed it was pinning the **switch itself
 and the else-arm**, not just the bodies: a branch that is never taken on the
 built configuration is not covered by pinning what it contains.
 
 *The floor's value.*  Weakening the two-cell floor to one left the behavioural
-group **passing** — a one-cell floor still leaves a cell of bank, so "a floor
+group **passing** - a one-cell floor still leaves a cell of bank, so "a floor
 exists" is all the geometry can say.  The exact number is covered by the source
 rule and by nothing else, and that is now written down rather than assumed.
 
@@ -850,15 +850,15 @@ and the `half length` column) are what to read to see whether they were applied.
 | `ShaderGen.exe` | `ALL PASS (0 failures)` |
 | `StampSurfaceTest.exe` | `ALL STAMP SURFACE TESTS PASS`, **32** PASS lines, 0 FAIL |
 | md5, build output vs deployed | identical, 1273856 bytes |
-| Timestamps | every `src/**` file older than `NMN_DeformableTerrain.dll`, and `StampSurfaceTest.exe` newer than both `ClipmapUpdateCS.h` and `StampSurfaceTest.cpp` — so the passing suite is the edited suite, not the previous one.  The dll is deleted before a final build whenever one before it compiled a sabotage; without that, `ninja` would be free to leave the sabotaged link in place and the "rebuilt" claim would be empty. |
-| Embedded build tag | present once.  The round-scoped tags it replaced are absent, which is what the scan pins |
-| Embedded shader strings | `StampOutlineOvershoot` ×4 — the shader body is embedded twice and each copy holds the definition plus the single call, so the pin is 4 and it was **measured on the built image before being written down**; `(len - 1.0f) / invGrad` ×2; `max(bandRef * rim.x, 2.0f * Window.z)` ×2; `d - s.z` ×0 |
+| Timestamps | every `src/**` file older than `NMN_DeformableTerrain.dll`, and `StampSurfaceTest.exe` newer than both `ClipmapUpdateCS.h` and `StampSurfaceTest.cpp` - so the passing suite is the edited suite, not the previous one.  The dll is deleted before a final build whenever one before it compiled a sabotage; without that, `ninja` would be free to leave the sabotaged link in place and the "rebuilt" claim would be empty. |
+| Embedded build tag | present once.  The revision-scoped tags it replaced are absent, which is what the scan pins |
+| Embedded shader strings | `StampOutlineOvershoot` ×4 - the shader body is embedded twice and each copy holds the definition plus the single call, so the pin is 4 and it was **measured on the built image before being written down**; `(len - 1.0f) / invGrad` ×2; `max(bandRef * rim.x, 2.0f * Window.z)` ×2; `d - s.z` ×0 |
 | Pins that read 2, not 1 | `groupshared` → 2, `place {} {} \| ` → 2, `rim {:.2f}` → 2: the update shader's body is embedded **twice**, and has been in every build measured, across forty-odd archives. |
-| Pin that was wrong first time | `t {:+.2f}` reads 2, not 1 — and the second match is `highes**t {:+.2f}** world units` in the shape census, a different literal that happens to end in the same characters. Pinning it with its NUL terminator gives 1. |
+| Pin that was wrong first time | `t {:+.2f}` reads 2, not 1 - and the second match is `highes**t {:+.2f}** world units` in the shape census, a different literal that happens to end in the same characters. Pinning it with its NUL terminator gives 1. |
 | Pins deliberately not used | anything naming an `inline` function (`ContactReach`, `HeightAboveSnow`, `DropAt`, `HalfLengthFromStretch`, `Allow`, `GateIsBinding`, `WidestLimit`, `TightestLimit`): inlined or dropped, so a pin on one is a claim that cannot fail. Their behaviour is covered by the `drop`, `shader rules` and `log budget` test groups instead. |
 | ini | comments only, both the shipped template and the deployed copy.  No key is added and no value changes. |
 | Probe residue | `grep -c "PROBE"` → 0 in every source file. |
-| Known gap | `ReportShaftTally` stays silent when its window is empty, so a five-second stretch with no shaft candidate leaves no line at all. That is deliberate — an idle window would otherwise print every five seconds — but it does mean "no line" and "no weapon near the snow" read the same. |
+| Known gap | `ReportShaftTally` stays silent when its window is empty, so a five-second stretch with no shaft candidate leaves no line at all. That is deliberate - an idle window would otherwise print every five seconds - but it does mean "no line" and "no weapon near the snow" read the same. |
 | Known gap | The band's floor is **two** cells, and only the source rule pins the value: weakening it to one cell leaves the behavioural group passing, because a one-cell floor still leaves a cell of bank. What the geometry proves is that a floor exists; the number is text. |
 
 ## What the log shows
@@ -898,13 +898,13 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
 | `Carried weapon: ... StampRim=1.00 StampMinDepth=1.00` | `StampRim=0.00` means the groove cannot have snow heaped on it; `StampMinDepth=1.00` means the depth is not being scaled down by the mark's narrowness. Both being 1.00 is what makes a rut read like a footprint. |
 | `MarkFootAspect` / `MarkRimJitter` | The two knobs for the shape of a weapon's mark. `MarkFootAspect` sets the width; `MarkRimJitter=0` is the documented escape hatch back to a smooth rim edge. |
 | `depth x0.10` in `Shaft stamp:` | **The other field to read when a rut looks like a scratch.** It is what the depth is multiplied by; `x1.00` is a foot's full depth. |
-| `Shaft mesh: accepted` / `refused: ...` / `not measured (...)` | Which of the three happened. `accepted` is the mesh path; the other two mean the hull route took over. The reason is in the brackets — `skinned mesh` and `union box far larger than the hull` are refusals by design, not faults. |
+| `Shaft mesh: accepted` / `refused: ...` / `not measured (...)` | Which of the three happened. `accepted` is the mesh path; the other two mean the hull route took over. The reason is in the brackets - `skinned mesh` and `union box far larger than the hull` are refusals by design, not faults. |
 | `layout desc` | Which byte layout won the vote. `desc` is the documented one; a different winner means the documented offsets were wrong for this mesh, which is worth knowing. |
 | `err 0.03` | The mesh-vs-`modelBound` error, against the tolerance `0.45 * bound r + 1.0`. Small means the stride is right. A large one means the vertices were read wrong and the mark was shaped from garbage. |
 | `union 40.1 vs hull 59.7` | The union box's three half extents summed, against the hull's length plus thickness. The refusal fires when the first exceeds `6 * (second + 1)`. |
 | `bands 0.61..2.04 over t -0.38..0.44 x1.000 -> width 2.04` | The mesh's width across the buried stretch, the stretch itself in mesh parameter space, the mesh-to-world scale, and the half width that came out. For a bow the two band figures should differ; for a rod they should not. |
 | `place span` | The buried stretch was found and the mark is in its middle. The intended path. |
-| `drop N.NN of radial N.NN, axis z N.NN` | **The field to read first when a weapon is clearly in the snow and there is no mark.** It is how far the object's own lowest point hangs *below the axis at that point* — a thickness — and the `radial` figure beside it is the half width the bands measured, so the drop should be of that order and not larger. `axis z` is the axis's vertical component: near zero means the object is horizontal and the drop is a pure thickness; large negative means it is tilted, which is exactly the case the old `centre - lowest vertex` formula inflated to 52-64. A drop of tens of units on a thin object is a fault, not a big weapon. |
+| `drop N.NN of radial N.NN, axis z N.NN` | **The field to read first when a weapon is clearly in the snow and there is no mark.** It is how far the object's own lowest point hangs *below the axis at that point* - a thickness - and the `radial` figure beside it is the half width the bands measured, so the drop should be of that order and not larger. `axis z` is the axis's vertical component: near zero means the object is horizontal and the drop is a pure thickness; large negative means it is tilted, which is exactly the case the old `centre - lowest vertex` formula inflated to 52-64. A drop of tens of units on a thin object is a fault, not a big weapon. |
 | `span N.N deep N.NN` | The buried length and the deepest sample. `span` should be smaller than the weapon and should change with the terrain, not stay at one number. **`deep` must not equal `drop`**: a depth equal to the drop is the drop with zero added to it, not a measurement. |
 | `rim N.NN` | Whether the mark was given the raised snow a footprint gets. It is `stamp.rim`, the number the shader reads; `0.00` means the groove cannot have anything heaped along it however the profile is set, because the shader only raises a rim when `p.w` is non-zero (`ClipmapUpdateCS.h`). |
 | `t N.NN` / `t -` | The axis parameter of the crossing, and `-` where no crossing was solved. Only the `hit` route solves one, and it is the only route that prints a number. |
@@ -922,7 +922,7 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
 - **One other consumer still reads `d` as though it were a distance: the lip
   band.**  `ClipmapUpdateCS.h` places the thrown snow with
   `inner = s.z * saturate(p.x)`, `outer = s.z * (1 + lipBand)` and
-  `u = (d - inner) / (outer - inner)` — three multiples of `s.z` compared
+  `u = (d - inner) / (outer - inner)` - three multiples of `s.z` compared
   against `d`, which is only a single number for a disc.  It is **not a live bug
   today**, and the proof is reachability rather than shape: the branch is entered
   only when `StampNoise[i].y` is non-zero, which is `stamp.lipBand`, which
@@ -934,7 +934,7 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
   one, because the bulge is already folded into `d`) and correct for an ellipse,
   is to count in outline-normalised units instead:
   `u = ((d / s.z) - saturate(p.x)) / ((1 + lipBand) - saturate(p.x))`.
-  Worth doing the moment a line is given thrown snow, and not before — as a
+  Worth doing the moment a line is given thrown snow, and not before - as a
   change today it is a no-op on every reachable input, and a no-op that costs a
   build, a redeploy and a playthrough is not worth making.
 - **The log formatting has no test.**  `LogShaftStamp` builds its `end` and `t`
@@ -947,7 +947,7 @@ Shaft tally: 5s | seen N | judged N | marked N (line N, disc N) | refused N carr
   found by a fixed probe rather than dynamically.
 - **The mesh walk shapes the width along the object and the lowest corner of its
   box, but the stamped shape is still a swept line of that width.**  A shield's
-  face or a hammer's head is not yet expressed as a second dimension — that would
+  face or a hammer's head is not yet expressed as a second dimension - that would
   need the mark's cross-section to vary along the stretch, which the stamp's
   parameters (a radius, a half width, an axis) cannot currently carry.
 
@@ -959,34 +959,34 @@ and a playthrough, and several cost more than one.
 - **A value written unconditionally somewhere and overwritten conditionally
   somewhere else.**  Before inserting an assignment, grep the downstream for an
   unconditional write of the same field.  A field can also be cleared by whole-
-  struct assignment — `g_motion[a_form] = { x, y, z }` silently clears any
-  sibling member — so adding a field is not the same as making it effective.
+  struct assignment - `g_motion[a_form] = { x, y, z }` silently clears any
+  sibling member - so adding a field is not the same as making it effective.
 - **Scaling the upstream is not scaling the downstream.**  If a value's meaning
   changes, every reader has to be re-read: an upstream change of "length" can
   arrive downstream as "width" duty.
 - **A probe's criterion has to be falsifiable.**  A condition that is true of
-  every input — `f >= half`, or a pin on an `inline` function — is a claim that
+  every input - `f >= half`, or a pin on an `inline` function - is a claim that
   cannot fail, which is worse than no probe.
 - **Verify an embedded string by searching the bytes with Python**, not with
   `strings`, and note that `grep -c $'\r'` misreports zero in this environment.
 - **A backup file is not the original.**  For a "compare against the original"
   claim, use the untouched copy, not a `.bak-*` left by an editor.
 - **Before inserting a function, confirm its namespace and that every symbol it
-  uses is in scope** — and that no same-named local is shadowing one.  A shadowed
+  uses is in scope** - and that no same-named local is shadowing one.  A shadowed
   `measured` compiled silently and meant something different from the enclosing
   one.  Iron law: check for shadowing as well as for scope.
 - **When rewriting a region, the match string has to cover every line that will
-  be replaced.**  A partial match leaves orphaned fragments — the same class of
+  be replaced.**  A partial match leaves orphaned fragments - the same class of
   failure as a mechanical search-and-replace that produces a doubled half
   sentence and a stray token.
 - **Test thresholds are only meaningful for the parameters they were computed
   with.**  Changing a parameter means recomputing the margin, and a branch's
-  reachable interval is the **intersection** of its inequalities — selecting a
+  reachable interval is the **intersection** of its inequalities - selecting a
   test point against only one of them lands outside the branch.
 - **Every new assertion has to be reverse-verified**: break the implementation,
   confirm the failure, restore, confirm the pass.  For an arithmetic-only change
   no embedded string moves, so the byte scan stays green and a source-level pin
-  is the only second rule available — and that pin has to cover **both arms** of
+  is the only second rule available - and that pin has to cover **both arms** of
   a branch, with comments stripped before counting.
 - **A sentinel initial value that would itself pass the "has this been written"
   test is a bug.**  A field initialised to a plausible value cannot be told apart
@@ -995,24 +995,24 @@ and a playthrough, and several cost more than one.
   physical quantity.**  Two reference surfaces compared as though they were one
   produced a `drop 9.14` beside a `span 6.6`, and a "thickness" that was
   measuring a length.
-- **"Subtract it and add it back" is a warning sign** — it usually means two
+- **"Subtract it and add it back" is a warning sign** - it usually means two
   reference surfaces are being reconciled.  Unifying them means deleting the
   compensation, or the correction is counted twice.
-- **A main direction is only defined up to sign** — the sign has to be settled
+- **A main direction is only defined up to sign** - the sign has to be settled
   explicitly, or "which end is band 0" is a coin toss.
 - **An early-return guard can make a new branch dead code.**  Before adding a new
   path, check whether an `if (... < 0) return;` in front of it makes the new path
   unreachable.
 - **A sabotage that survives is worth more than one that fails.**  It is the only
   way to find out which half of a change is actually covered, and the surviving
-  half has to be **named** as belonging to whichever check covers it — behaviour
+  half has to be **named** as belonging to whichever check covers it - behaviour
   or source rule.  Some changes are covered only by one of the two.
 - **A diagnostic log must not have a one-off budget.**  An allowance spent early
   leaves the rest of the session silent, and "silent" is indistinguishable from
   "broken".  The tell is a log whose last line of a given kind is minutes before
   the end of the file.
 - **Writing a file and reading it back without waiting for a flush reads the old
-  contents** — a false failure, and a false pass if the assertion was inverted.
+  contents** - a false failure, and a false pass if the assertion was inverted.
 - **The same physical quantity reached by two routes is two reference surfaces.**
   A gate that asks about the shell and a walk that asks about the centre line
   will disagree, and the disagreement is not a threshold to tune.
@@ -1023,7 +1023,7 @@ and a playthrough, and several cost more than one.
   unrelated literal the count is wrong *for a reason*, which is more dangerous
   than reading zero because it looks like evidence.  Pin the literal with its NUL
   terminator, and measure the expected count on the built image rather than
-  counting it in the header — comments and definitions both survive into the
+  counting it in the header - comments and definitions both survive into the
   emitted text.
 - **An old assertion can pin an old bug.**  When a change makes an existing test
   fail, the first question is whether it was expecting the *wrong* value.
@@ -1043,7 +1043,7 @@ and a playthrough, and several cost more than one.
   *constants* is usually wrong: a ceiling chosen for one shape's maximum is not
   the ceiling the aligned shape needs.
 - **After a sabotage, rebuild before delivering.**  The last deployed binary may
-  be the contaminated one — a restored source with an un-rebuilt binary is still
+  be the contaminated one - a restored source with an un-rebuilt binary is still
   the sabotage on disk, and neither the exit code nor a source read will show it.
 - **An assertion that only exercises a pure function with idealised arguments is
   not enough**: at least one has to walk the caller's real arguments, or the
@@ -1060,7 +1060,7 @@ and a playthrough, and several cost more than one.
   harness; and note that `grep -c` exits 1 when the count is zero, so a
   `grep -c` guard at the end of a chain reports a false failure.  Judge the suite
   by `ALL PASS (0 failures)` / `ALL STAMP SURFACE TESTS PASS`, not by counting
-  lines that contain "fail" — a test *name* can contain it.
+  lines that contain "fail" - a test *name* can contain it.
 - **GNU sed's BRE does not interpret `\t`**, so an indentation change made with
   `sed -i` is a silent no-op.  Use Python and count bytes.
 - **A template in a header is how a pure function gets tested.**  The land height

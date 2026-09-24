@@ -180,6 +180,7 @@ namespace ActorShapes
 		a_extent.length = 0.0f;
 		a_extent.thickness = 0.0f;
 		a_extent.radius = 0.0f;
+		a_extent.vertical = 0.0f;
 		if (!a_shape) {
 			return false;
 		}
@@ -205,6 +206,16 @@ namespace ActorShapes
 		// type and its six projections are the only things that can say
 		// whether a zero came from the engine or from the arithmetic.
 		g_lastShapeType = static_cast<int>(a_shape->type);
+
+		// `hkpConvexShape::radius` is deliberately **not** subtracted from
+		// the readings below.  Doing so was written and built once, on the
+		// reasoning that Havok defines `getMaximumProjection` as the core's
+		// projection plus `m_radius`, and the session log refutes it: an
+		// arrow read `+X=-X=0.03`, `+Y=-Y=0.41`, `+Z=-Z=0.00`, three
+		// different numbers that cannot each carry the same radius, and the
+		// half extents derived from them reproduce the logged length and
+		// radius exactly.  See the note in `ActorShapes.h` for the two
+		// worked objects.
 
 		// Reused from the recorded raw values rather than asked again: the
 		// engine's projection is a virtual call whose result cannot change
@@ -251,6 +262,23 @@ namespace ActorShapes
 
 		const float hi = a_extent.length;
 		const float lo = a_extent.thickness;
+
+		// The vertical reach, taken the same way `hz` was: the projections
+		// were asked along the world axes, so `+Z` and `-Z` measure exactly
+		// how far the shape reaches up and down.  Averaged rather than
+		// subtracted for the same reason as above - the support function
+		// returns the same number for +d and -d whenever the shape sits to
+		// one side of its own origin.
+		//
+		// This is deliberately the *raw* z half extent and not `length`,
+		// `thickness` or `radius`.  Every one of those can be much larger
+		// than the shape is tall: a box's `radius` is its space diagonal
+		// (measured 12.62 against a true 4.16 on a fur helmet) and its
+		// `length` is its longest horizontal side.  A drop test that
+		// subtracts any of them from the centre pushes the object's lowest
+		// point below the ground it is actually resting on, and the mark
+		// then lands under the object instead of at its feet.
+		a_extent.vertical = hz;
 
 		switch (a_shape->type) {
 		case RE::hkpShapeType::kSphere:

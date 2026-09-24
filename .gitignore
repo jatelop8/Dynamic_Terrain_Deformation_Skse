@@ -19,3 +19,8 @@ generated_shaders/
 backup_*/
 _patch_audit/
 _*.txt
+
+# Run transcripts and the local harnesses that read them.  None of it is part
+# of the source tree or of a build.
+*.log
+tools/offline/_*

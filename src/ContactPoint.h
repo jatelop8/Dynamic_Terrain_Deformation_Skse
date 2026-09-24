@@ -641,13 +641,12 @@ namespace ContactPoint
 	// the snow standing on it.
 	//
 	// This is the walk's own input, and it is a named function rather than a
-	// `land + SnowSurface::LiftAt(...)` written inline at the call site for a
-	// reason the sabotage test found rather than a reason in the abstract:
-	// `Clipmap.cpp` is not linked into the offline test, so an expression
-	// living there cannot be asserted on at all - flipping it back to the
-	// bare land left every test green and every byte pin matching.  Half a
-	// fix that no rule can see is the failure this whole file exists to
-	// avoid, so the arithmetic lives here and the caller only names it.
+	// `land + SnowSurface::LiftAt(...)` written inline at the call site,
+	// because `Clipmap.cpp` is not linked into the offline test: an expression
+	// living there cannot be asserted on at all.  Flipping it back to the bare
+	// land leaves every test green and every byte pin matching, and half a fix
+	// that no rule can see is the failure this whole file exists to avoid, so
+	// the arithmetic lives here and the caller only names it.
 	//
 	// `a_lift` is whatever the caller measured standing on that land; a
 	// non-finite one is treated as no blanket, which is the bare-land

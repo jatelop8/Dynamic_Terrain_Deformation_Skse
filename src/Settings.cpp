@@ -400,8 +400,28 @@ namespace Settings
 			return true;
 		}
 
-		bool ApplyMagicSetting(const std::string& key, const std::string& value)
-		{
+	bool ApplyMagicSetting(const std::string& key, const std::string& value)
+	{
+		// Handled before the chain below rather than inside it.  That chain is
+		// already at the compiler's limit for nested blocks (MSVC C1061), and
+		// one more `else if` on the end of it stops the file building at all.
+		// Anything added here has to leave the chain's length unchanged.
+		if (key == "ObjectStampMaxDepthPerThickness") {
+			objectStampMaxDepthPerThickness =
+				Clamped(key, AsFloat(key, value, 2.0f), 0.0f, 64.0f);
+			return true;
+		}
+
+		// The same reasoning as above: these leave the chain's length alone.
+		if (key == "ObjectLiftToSnow") {
+			objectLiftToSnow = AsBool(value);
+			return true;
+		}
+		if (key == "ObjectLiftSlack") {
+			objectLiftSlack = Clamped(key, AsFloat(key, value, 0.5f), 0.0f, 64.0f);
+			return true;
+		}
+
 		if (key == "EnableMagicImpacts") {
 			enableMagicImpacts = AsBool(value);
 		} else if (key == "EnableShoutImpacts") {
@@ -628,12 +648,22 @@ namespace Settings
 			objectStampRadiusScale = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 16.0f);
 		} else if (key == "ObjectStampDepthScale") {
 			objectStampDepthScale = Clamped(key, AsFloat(key, value, 1.0f), 0.0f, 16.0f);
+		} else if (key == "ObjectStampFromMesh") {
+			objectStampFromMesh = AsBool(value);
+		} else if (key == "ObjectStampMinRadius") {
+			objectStampMinRadius = Clamped(key, AsFloat(key, value, 1.5f), 0.0f, 512.0f);
+		} else if (key == "ObjectStampMaxRadius") {
+			objectStampMaxRadius = Clamped(key, AsFloat(key, value, 48.0f), 0.0f, 4096.0f);
 		} else if (key == "ObjectFullSizeRadius") {
 			objectFullSizeRadius = Clamped(key, AsFloat(key, value, 1.0f), 1.0f, 4096.0f);
 		} else if (key == "ObjectContactTolerance") {
 			objectContactTolerance = Clamped(key, AsFloat(key, value, 48.0f), 0.0f, 1024.0f);
 		} else if (key == "ObjectSinkLimit") {
 			objectSinkLimit = Clamped(key, AsFloat(key, value, 40.0f), 0.0f, 4096.0f);
+		} else if (key == "ObjectSinkFollowsSnow") {
+			objectSinkFollowsSnow = AsBool(value);
+		} else if (key == "ObjectSinkSlack") {
+			objectSinkSlack = Clamped(key, AsFloat(key, value, 16.0f), 0.0f, 1024.0f);
 		} else if (key == "ObjectStampInterval") {
 			objectStampInterval = Clamped(key, AsFloat(key, value, 0.20f), 0.0f, 60.0f);
 		} else if (key == "ArrowStampRadius") {

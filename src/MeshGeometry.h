@@ -40,10 +40,14 @@ namespace RE
 //
 // The mesh fit is cached per geometry and only ever computed once, because a
 // mesh's own shape does not change - only the transform over it does.  So the
-// expensive half runs on the first frame a weapon is seen and never again, and
-// every later frame pays eight point transforms per mesh.  It is still only
-// called on the carried-weapon path, so a scene full of unmeasured objects
-// costs nothing.
+// expensive half runs on the first frame a mesh is seen and never again, and
+// every later frame pays eight point transforms per mesh.
+//
+// Two callers read meshes now: the carried-weapon path in Clipmap.cpp, and
+// the dropped-object path in ObjectStamps.cpp.  The second is bounded the
+// same way the first is - it runs on the objects already classified as
+// stampable, and the fit is cached per mesh - so a scene full of unmeasured
+// objects still costs nothing but the collision walk it already did.
 namespace MeshGeometry
 {
 	// The fitted mesh, in both spaces, plus what the walk had to say about

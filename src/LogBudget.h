@@ -13,13 +13,12 @@
 //
 // The fault this solves was measured rather than imagined.  The carried-shaft
 // lines each had a one-shot budget - 24 marks, 12 refusals, 32 mesh lines -
-// and a recorded run spent all of them inside its first five seconds: the
-// last `Shaft gate` line was written at 23:09:52.664, the last `Shaft stamp`
-// at 23:09:56.940, and the ninety seconds that followed held no shaft line at
-// all.  The five seconds that were covered are the opening of the session,
-// not the part where a carried weapon fails to leave a furrow, so the log
-// could not answer the one question it exists for.  A rate limit replaces the
-// budget: the whole session is covered and no busy second can exhaust it.
+// and a single stretch of play can spend all of them inside its first five
+// seconds, after which no shaft line appears at all.  The five seconds that
+// are covered are the opening of the session, not the part where a carried
+// weapon fails to leave a furrow, so the log cannot answer the one question it
+// exists for.  A rate limit replaces the budget: the whole session is covered
+// and no busy second can exhaust it.
 //
 // The same run shows why a rate limit is not enough on its own.  Twelve
 // refusals were written inside four tenths of a second; they say a refusal

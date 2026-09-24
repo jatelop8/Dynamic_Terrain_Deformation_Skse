@@ -652,6 +652,54 @@ namespace Settings
 
 	inline float objectStampRadiusScale{ 1.0f };
 
+	// Whether a dropped object's mark is derived from its own mesh rather
+	// than from its collision hull.
+	//
+	// A hull is a capsule or a box, so every object of a given size stamped
+	// the same circle however it was shaped.  The mesh carries the shape -
+	// the long axis, the width across it and the thickness that decides how
+	// far it lies below its own centre line - so a helmet, a sword and a
+	// wheelbarrow leave three different marks.  Reading it costs one vertex
+	// walk per distinct mesh per session, because a mesh's own shape does not
+	// change; everything after that is eight transformed corners.
+	//
+	// Off, or on a mesh that cannot be read, the hull is used exactly as
+	// before, so turning this off is a true escape hatch and not a partial
+	// one.  See MeshGeometry.h for why a reading can be refused.
+	inline bool objectStampFromMesh{ true };
+
+	// The range a mesh-derived mark's long half axis is allowed to fall in,
+	// in world units.
+	//
+	// The floor is two texels - the clipmap's own resolution is 0.75 - so a
+	// mark narrower than the grid it is drawn on cannot exist, which is the
+	// same rule the rim band's width follows.  The ceiling is four footprint
+	// half lengths, so no dropped object can leave a mark larger than the
+	// scene's own largest ordinary one however its mesh measures.
+	inline float objectStampMinRadius{ 1.5f };
+
+	inline float objectStampMaxRadius{ 48.0f };
+
+	// How deep, as a multiple of the object's own half thickness, a
+	// mesh-derived mark is allowed to be.
+	//
+	// A mark deeper than the object that made it cannot be seen: the snow
+	// surface sinks below the object's underside and the object is buried in
+	// its own dent.  Measured on a fur helmet, whose collision hull is 4.1
+	// units thick: the mesh arm was drawing depth 13.4 under a mark 10.1 wide,
+	// so the depression was three times the helmet's thickness and wider than
+	// the helmet itself.  What showed was a hole with nothing in it.
+	//
+	// The ceiling is the object's own measured thickness rather than a number
+	// from the INI, so it holds for a ring and for a cart alike, and it moves
+	// with ObjectStampDepthScale instead of capping against it - the scale
+	// still decides how deep an object sinks relative to others, and this
+	// only stops the deepest of them from disappearing.  Two is a mark that
+	// reaches twice the object's half thickness: it still reads as something
+	// heavy having pressed in, while the object stays proud of its own hole.
+	// Set 0 to switch the ceiling off and get the raw scaled depth back.
+	inline float objectStampMaxDepthPerThickness{ 2.0f };
+
 	inline float objectStampDepthScale{ 1.0f };
 
 	inline float objectFullSizeRadius{ 1.0f };
@@ -659,6 +707,36 @@ namespace Settings
 	inline float objectContactTolerance{ 48.0f };
 
 	inline float objectSinkLimit{ 40.0f };
+
+	// How far below the snow surface an object may sit before its mark is
+	// refused.  The floor is always the blanket's own thickness at that point,
+	// so an object lying on the ground under the snow is never mistaken for
+	// one clipped through the world.  When this is on, a further ObjectSinkSlack
+	// is allowed on top of the blanket.
+	inline bool objectSinkFollowsSnow{ true };
+
+	inline float objectSinkSlack{ 16.0f };
+
+	// Lift a dropped object so that its own top sits at the snow surface.
+	//
+	// The raise displaces the terrain *mesh*; the engine's collision does not
+	// know about it, so a dropped object falls through the blanket and stops
+	// on the bare terrain under it.  Measured in game: a steel arrow read
+	// `drop = -35.9`, which against a land height of about 0 puts its lowest
+	// point at -0.9 - on the ground, with the snow surface 35 units over its
+	// head.  Anything shorter than the blanket is then buried whole, which is
+	// what an object "vanishing when it lands" has actually been.
+	//
+	// The lift is `snow surface - object's own height`, so the object's top
+	// ends up level with the snow and its bottom is its own height below it.
+	// The object is only ever moved up, and never by more than the blanket is
+	// thick, so gear placed on a rock or standing on a floor is left alone.
+	inline bool objectLiftToSnow{ true };
+
+	// The least lift worth applying, in world units.  Below this the object is
+	// already where it belongs and moving it would only jitter against the
+	// physics engine a fraction of a unit at a time.
+	inline float objectLiftSlack{ 0.5f };
 
 	inline float objectStampInterval{ 0.20f };
 
